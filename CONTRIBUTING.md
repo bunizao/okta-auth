@@ -3,11 +3,9 @@
 ## Setup
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -U pip
-pip install -e '.[dev]'
-python -m playwright install chromium
+uv venv && source .venv/bin/activate
+uv pip install -e '.[dev]'
+playwright install chromium
 ```
 
 ## Local Quality Gates
