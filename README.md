@@ -22,12 +22,56 @@ Sessions are stored under `~/.okta-auth-mcp/sessions/`.
 - This server is intended for **local trusted execution**.
 - Session files and cookies are sensitive credentials; protect the host account.
 - Prefer private/internal usage unless security controls are reviewed.
+- **Never pass credentials as tool arguments** — use environment variables so that AI agents never see your username, password, or TOTP secret in their context.
+
+## Credentials Setup
+
+### Environment Variables
+
+Set credentials in your shell profile so they are inherited by the MCP server process. The AI agent only needs to pass the target URL.
+
+```bash
+# Add to ~/.zshrc or ~/.zprofile (zsh) / ~/.bashrc (bash)
+export OKTA_USERNAME="you@company.com"
+export OKTA_PASSWORD="your-okta-password"
+export OKTA_TOTP_SECRET="JBSWY3DPEHPK3PXP"  # only if MFA is enabled
+```
+
+After editing, reload your shell or open a new terminal, then restart the AI Agent.
+
+The AI agent can then log in with just the URL:
+
+```
+okta_login(url="https://portal.company.com")
+```
+
+Explicit arguments still override environment variables if needed.
+
+### How to Get Your TOTP Secret Key
+
+The TOTP secret is the Base32 key (16–32 uppercase letters and digits) that backs your authenticator app. You need to obtain it **during the initial MFA enrollment** — it cannot be retrieved from an already-configured authenticator app.
+
+#### During Okta MFA setup
+
+1. In Okta, go to **Settings → Security Methods** (or follow your admin's enrollment link).
+2. Choose **Google Authenticator** as the factor type.
+3. The QR code screen also shows a **"Can't scan?"** link — click it.
+4. Copy the displayed text key (e.g. `JBSWY3DPEHPK3PXP`). This is your `OKTA_TOTP_SECRET`.
+5. Finish enrollment by entering the 6-digit code from your authenticator app to confirm.
+
+> This project does **not** currently support portals that use **only** the Okta Verify app for MFA.
+
+#### Already enrolled and lost the secret?
+
+You must **re-enroll** the authenticator factor to obtain a new secret:
+
+1. Go to **Okta → Settings → Security Methods**.
+2. Remove the existing authenticator entry.
+3. Re-add it and follow the steps above to capture the secret before scanning the QR code.
 
 ## Installation
 
-### With uv (recommended)
-
-No manual install needed — use `uvx` to run directly:
+### With uv
 
 ```bash
 uvx okta-auth-mcp
@@ -85,9 +129,3 @@ ruff format --check .
 ruff check .
 pytest
 ```
-
-## Release
-
-- Tag format: `vX.Y.Z`
-- GitHub Actions builds distributions and publishes to PyPI with trusted publishing.
-- Configure PyPI trusted publisher to enable release workflow.
