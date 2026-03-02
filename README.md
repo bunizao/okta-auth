@@ -1,14 +1,19 @@
 # okta-auth-mcp
 
+> **Alpha** — this project is under active development and iterating quickly.
+> APIs, tool signatures, and session formats may change between releases.
+
 MCP server that performs Okta SSO login through Playwright and persists per-domain session state for reuse by AI agents.
 
 ## What It Provides
 
-- `okta_login`: authenticate to a target URL and store session state
-- `okta_check_session`: verify whether a stored session is still valid
-- `okta_list_sessions`: list saved sessions and metadata
-- `okta_delete_session`: remove a stored session
-- `okta_get_cookies`: retrieve cookies from stored session (sensitive)
+| Tool | Description |
+|------|-------------|
+| `okta_login` | Authenticate to a target URL and store session state |
+| `okta_check_session` | Verify whether a stored session is still valid |
+| `okta_list_sessions` | List saved sessions and metadata |
+| `okta_delete_session` | Remove a stored session |
+| `okta_get_cookies` | Retrieve cookies from stored session (sensitive) |
 
 Sessions are stored under `~/.okta-auth-mcp/sessions/`.
 
@@ -18,36 +23,60 @@ Sessions are stored under `~/.okta-auth-mcp/sessions/`.
 - Session files and cookies are sensitive credentials; protect the host account.
 - Prefer private/internal usage unless security controls are reviewed.
 
-## Quick Start
+## Installation
+
+### With uv (recommended)
+
+No manual install needed — use `uvx` to run directly:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -U pip
-pip install -e '.[dev]'
-python -m playwright install chromium
+uvx okta-auth-mcp
 ```
 
-Run server over stdio:
+### With pip
 
 ```bash
-okta-auth-mcp
+pip install okta-auth-mcp
 ```
 
-## MCP Client Config Example
+### Browser setup
+
+The server uses Playwright for browser automation. It **automatically detects and prefers your system Chrome/Edge** — no extra download required if you already have one installed.
+
+If no system browser is found, install the Playwright-bundled Chromium as fallback:
+
+```bash
+playwright install chromium
+```
+
+## MCP Client Configuration
+
+### Claude Code
+
+```bash
+claude mcp add okta-auth -- uvx okta-auth-mcp
+```
+
+### Claude Desktop / Cursor / Windsurf
 
 ```json
 {
   "mcpServers": {
     "okta-auth": {
-      "command": "okta-auth-mcp",
-      "args": []
+      "command": "uvx",
+      "args": ["okta-auth-mcp"]
     }
   }
 }
 ```
 
 ## Development
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -e '.[dev]'
+playwright install chromium
+```
 
 Run checks locally:
 
