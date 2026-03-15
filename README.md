@@ -22,9 +22,14 @@ Run `okta config` to open the interactive credential wizard:
 okta config
 ```
 
-The wizard stores `OKTA_USERNAME`, `OKTA_PASSWORD`, and optional `OKTA_TOTP_SECRET`
-in your OS credential manager, and stores only the optional default portal URL in
-`~/.okta-auth/config.json`.
+The wizard supports two providers:
+
+- `keyring`: store `OKTA_USERNAME`, `OKTA_PASSWORD`, and optional `OKTA_TOTP_SECRET`
+  in the OS credential manager
+- `op`: generate `~/.okta-auth/op.env` with `op://...` references for `op run`
+
+Only non-secret settings such as the default portal URL and provider metadata are
+stored in `~/.okta-auth/config.json`.
 
 You can also pass values directly:
 
@@ -38,6 +43,8 @@ Available commands:
 
 - `okta [url]`: log in and save a session
 - `okta config`: open the TUI credential wizard
+- `okta config --provider keyring`: configure the local OS keyring explicitly
+- `okta config --provider op`: configure 1Password CLI references explicitly
 - `okta config --show`: inspect stored credential status without revealing secrets
 - `okta config --reset`: delete stored credentials and local settings
 - `okta check <url>`: verify a saved session
@@ -72,14 +79,14 @@ Credential resolution order is:
 
 1. Explicit CLI or MCP arguments
 2. Environment variables
-3. Credentials saved by `okta config` in the OS keyring
+3. Credentials saved by `okta config` in the OS keyring when the provider is `keyring`
 
-### Recommended: `okta config`
+### Recommended: `okta config --provider keyring`
 
-The recommended local setup is the built-in TUI wizard:
+The default local setup is the built-in TUI wizard with the `keyring` provider:
 
 ```bash
-okta config
+okta config --provider keyring
 ```
 
 What it stores:
@@ -95,6 +102,29 @@ Backends used by `keyring` typically map to:
 
 If no secure backend is available, the wizard refuses to save credentials rather than
 falling back to plaintext files.
+
+### 1Password CLI via `okta config --provider op`
+
+If you already manage secrets in 1Password, the wizard can generate the `op run`
+reference file for you:
+
+```bash
+okta config --provider op
+```
+
+In `op` mode the wizard stores:
+
+- `vault`, `item`, field names, `default_url`: `~/.okta-auth/config.json`
+- `OKTA_USERNAME`, `OKTA_PASSWORD`, optional `OKTA_TOTP_SECRET` references:
+  `~/.okta-auth/op.env`
+
+The generated env file contains `op://...` references, not plaintext credentials.
+Use it to launch the CLI or MCP server:
+
+```bash
+op run --env-file=$HOME/.okta-auth/op.env -- okta
+op run --env-file=$HOME/.okta-auth/op.env -- uvx --from okta-auth-cli okta-auth
+```
 
 ### Environment Variables
 
@@ -118,7 +148,7 @@ okta_login(url="https://portal.company.com")
 
 Explicit arguments still override environment variables if needed.
 
-### 1Password CLI
+### Manual 1Password CLI Setup
 
 [`op run`](https://developer.1password.com/docs/cli/secrets-scripts/) injects secrets at process launch time. No plaintext credentials appear in shell profiles, config files, or environment variables — they live only in 1Password.
 
