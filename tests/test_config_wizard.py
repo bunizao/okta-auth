@@ -74,6 +74,7 @@ def test_config_wizard_saves_keyring_credentials_and_settings(monkeypatch) -> No
             or "/tmp/config.json"
         ),
     )
+    monkeypatch.setattr(config_wizard.credential_store, "clear_credentials", lambda: None)
 
     exit_code = wizard.run()
 
@@ -102,6 +103,7 @@ def test_config_wizard_saves_op_settings(monkeypatch) -> None:
         ]
     )
     saved = {}
+    cleared = []
 
     wizard = config_wizard.ConfigWizard(
         input_func=lambda prompt="": next(inputs),
@@ -113,12 +115,12 @@ def test_config_wizard_saves_op_settings(monkeypatch) -> None:
     monkeypatch.setattr(
         config_wizard.credential_store,
         "get_store_status",
-        lambda: {"available": False, "backend": "MissingKeyring", "error": "no backend"},
+        lambda: {"available": True, "backend": "FakeKeyring", "error": None},
     )
     monkeypatch.setattr(
         config_wizard.credential_store,
         "load_credentials",
-        lambda: StoredCredentials(),
+        lambda: StoredCredentials(username="old@example.com"),
     )
     monkeypatch.setattr(
         config_wizard.settings,
@@ -161,6 +163,11 @@ def test_config_wizard_saves_op_settings(monkeypatch) -> None:
             or "/tmp/config.json"
         ),
     )
+    monkeypatch.setattr(
+        config_wizard.credential_store,
+        "clear_credentials",
+        lambda: cleared.append(True),
+    )
     monkeypatch.setattr(config_wizard.shutil, "which", lambda command: "/opt/homebrew/bin/op")
 
     exit_code = wizard.run()
@@ -176,3 +183,49 @@ def test_config_wizard_saves_op_settings(monkeypatch) -> None:
         "op_totp_secret_field": None,
         "op_env_file": "/tmp/op.env",
     }
+    assert cleared == [True]
+
+
+def test_config_wizard_rejects_invalid_op_reference_name(monkeypatch, capsys) -> None:
+    inputs = iter(
+        [
+            "",
+            "2",
+            "https://portal.example.com",
+            "Personal/Shared",
+            "Okta MCP",
+            "",
+            "",
+            "",
+            "y",
+        ]
+    )
+
+    wizard = config_wizard.ConfigWizard(
+        input_func=lambda prompt="": next(inputs),
+        print_func=lambda *args, **kwargs: None,
+        stdin=_TTY(),
+        stdout=_TTY(),
+    )
+
+    monkeypatch.setattr(
+        config_wizard.credential_store,
+        "get_store_status",
+        lambda: {"available": False, "backend": "MissingKeyring", "error": "no backend"},
+    )
+    monkeypatch.setattr(
+        config_wizard.credential_store,
+        "load_credentials",
+        lambda: StoredCredentials(),
+    )
+    monkeypatch.setattr(
+        config_wizard.settings,
+        "load_settings",
+        lambda: AppSettings(credential_provider="op"),
+    )
+    monkeypatch.setattr(config_wizard.shutil, "which", lambda command: "/opt/homebrew/bin/op")
+
+    exit_code = wizard.run()
+
+    assert exit_code == 1
+    assert "unsupported characters" in capsys.readouterr().err

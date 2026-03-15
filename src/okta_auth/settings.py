@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -13,6 +14,7 @@ CONFIG_PATH = DATA_DIR / "config.json"
 DEFAULT_OP_ENV_PATH = DATA_DIR / "op.env"
 DEFAULT_PROVIDER = "keyring"
 PROVIDERS = {"keyring", "op"}
+_SUPPORTED_OP_REF_PATTERN = re.compile(r"^[A-Za-z0-9._\- ]+$")
 
 
 @dataclass
@@ -108,6 +110,12 @@ def write_op_env_file(app_settings: AppSettings) -> Path:
     """Write an op-compatible env file containing 1Password secret references."""
     if not app_settings.op_vault or not app_settings.op_item:
         raise ValueError("1Password vault and item are required.")
+    validate_op_reference_part("vault", app_settings.op_vault)
+    validate_op_reference_part("item", app_settings.op_item)
+    validate_op_reference_part("username field", app_settings.op_username_field)
+    validate_op_reference_part("password field", app_settings.op_password_field)
+    if app_settings.op_totp_secret_field:
+        validate_op_reference_part("TOTP field", app_settings.op_totp_secret_field)
 
     env_path = _op_env_path(app_settings)
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +152,17 @@ def uses_keyring(app_settings: AppSettings | None = None) -> bool:
     """Return True when the selected provider is the local OS keyring."""
     current = app_settings or load_settings()
     return current.credential_provider == "keyring"
+
+
+def validate_op_reference_part(label: str, value: str) -> None:
+    """Validate a vault, item, or field segment for a manual secret reference."""
+    if _SUPPORTED_OP_REF_PATTERN.fullmatch(value):
+        return
+
+    raise ValueError(
+        f"1Password {label} contains unsupported characters: {value!r}. "
+        "Use only letters, numbers, spaces, '.', '-', '_' or use the unique ID instead."
+    )
 
 
 def _normalize_string(value: object) -> str | None:

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from okta_auth import cli
-from okta_auth.credential_store import StoredCredentials
+from okta_auth.credential_store import CredentialStoreError, StoredCredentials
 from okta_auth.settings import AppSettings
 
 
@@ -146,6 +146,47 @@ def test_okta_config_show_json(monkeypatch, capsys) -> None:
     assert payload["default_url"] == "https://portal.example.com"
     assert payload["credential_provider"] == "op"
     assert payload["op_env_file"] == "/tmp/op.env"
+
+
+def test_okta_config_reset_reports_failure_when_keyring_cleanup_fails(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: AppSettings(
+            credential_provider="keyring",
+            op_env_file="/tmp/op.env",
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "get_store_status",
+        lambda: {
+            "available": True,
+            "backend": "FakeKeyring",
+            "error": None,
+            "username": "user@example.com",
+            "password_stored": True,
+            "totp_secret_stored": False,
+        },
+    )
+    monkeypatch.setattr(
+        cli,
+        "clear_credentials",
+        lambda: (_ for _ in ()).throw(CredentialStoreError("keyring locked")),
+    )
+    clear_calls = []
+    monkeypatch.setattr(
+        cli, "clear_op_env_file", lambda app_settings: clear_calls.append(app_settings)
+    )
+    monkeypatch.setattr(cli, "clear_settings", lambda: clear_calls.append("settings"))
+
+    exit_code = cli.main(["config", "--reset", "--yes", "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["deleted"] is False
+    assert "keyring locked" in payload["message"]
+    assert len(clear_calls) == 2
 
 
 def test_okta_ignores_keyring_when_provider_is_op(monkeypatch) -> None:

@@ -119,6 +119,10 @@ In `op` mode the wizard stores:
   `~/.okta-auth/op.env`
 
 The generated env file contains `op://...` references, not plaintext credentials.
+Vault, item, and field names must use characters supported by 1Password secret
+references. If a name contains unsupported separators such as `/`, use the
+object's unique ID instead.
+
 Use it to launch the CLI or MCP server:
 
 ```bash

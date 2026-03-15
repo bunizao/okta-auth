@@ -117,7 +117,11 @@ class ConfigWizard:
             self._print("Configuration was not changed.")
             return 1
 
-        self._save(state)
+        try:
+            self._save(state)
+        except (credential_store.CredentialStoreError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         return 0
 
     def _is_tty(self) -> bool:
@@ -352,6 +356,23 @@ class ConfigWizard:
             self._print(f"Provider: keyring ({state.keyring_backend})")
             self._print(f"Settings: {settings_path}")
             return
+
+        has_existing_keyring_credentials = bool(
+            state.username or state.password_stored or state.totp_secret_stored
+        )
+        if has_existing_keyring_credentials:
+            if not state.keyring_available:
+                raise credential_store.CredentialStoreError(
+                    "Cannot switch to the 1Password provider because existing OS keyring "
+                    "credentials could not be verified or removed."
+                )
+            try:
+                credential_store.clear_credentials()
+            except credential_store.CredentialStoreError as exc:
+                raise credential_store.CredentialStoreError(
+                    "Failed to remove existing OS keyring credentials before switching to "
+                    f"the 1Password provider: {exc}"
+                ) from exc
 
         saved_settings = settings.AppSettings(
             default_url=state.default_url,

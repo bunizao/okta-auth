@@ -47,8 +47,9 @@ async def okta_login(
     Sessions are stored per-domain in ~/.okta-auth/sessions/.
 
     Credentials are resolved in order: explicit parameter → environment variable
-    → OS keyring. Run `okta config` locally to store credentials in the system
-    credential manager without exposing them to AI agents.
+    → OS keyring when the local provider is set to `keyring`. When the provider
+    is set to `op`, launch the server through `op run` so the environment is
+    populated at process start.
 
     Args:
         url: Target URL to authenticate against (e.g., 'https://portal.company.com').

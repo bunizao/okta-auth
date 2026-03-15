@@ -354,6 +354,8 @@ def _show_config_status(*, use_json: bool) -> int:
 
 
 def _reset_config(args: argparse.Namespace) -> int:
+    current_settings = load_settings()
+    keyring_status = get_store_status()
     if not args.yes:
         if not sys.stdin.isatty():
             print("--reset requires --yes in non-interactive mode.", file=sys.stderr)
@@ -369,22 +371,27 @@ def _reset_config(args: argparse.Namespace) -> int:
             return 1
 
     keyring_error = None
-    try:
-        clear_credentials()
-    except CredentialStoreError as exc:
-        keyring_error = str(exc)
+    should_clear_keyring = uses_keyring(current_settings) or bool(keyring_status["available"])
+    if should_clear_keyring:
+        try:
+            clear_credentials()
+        except CredentialStoreError as exc:
+            keyring_error = str(exc)
 
-    clear_op_env_file(load_settings())
+    clear_op_env_file(current_settings)
     clear_settings()
-    message = "Stored credentials and local settings deleted."
-    if keyring_error:
-        message = f"{message} Keyring cleanup skipped: {keyring_error}"
-    payload = {"deleted": True, "message": message}
+    deleted = keyring_error is None
+    if deleted:
+        message = "Stored credentials and local settings deleted."
+    else:
+        message = f"Local settings were deleted, but OS keyring cleanup failed: {keyring_error}"
+    payload = {"deleted": deleted, "message": message}
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
-        print(payload["message"])
-    return 0
+        stream = sys.stdout if deleted else sys.stderr
+        print(payload["message"], file=stream)
+    return 0 if deleted else 1
 
 
 def _print_result(
