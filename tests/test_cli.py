@@ -83,7 +83,12 @@ def test_okta_defaults_to_stored_config(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "perform_login", fake_perform_login)
     monkeypatch.setattr(
-        cli, "load_settings", lambda: AppSettings(default_url="https://portal.example.com")
+        cli,
+        "load_settings",
+        lambda: AppSettings(
+            default_url="https://portal.example.com",
+            credential_provider="keyring",
+        ),
     )
     monkeypatch.setattr(
         cli,
@@ -121,6 +126,14 @@ def test_okta_config_show_json(monkeypatch, capsys) -> None:
             "config_exists": True,
             "config_path": "/tmp/config.json",
             "default_url": "https://portal.example.com",
+            "credential_provider": "op",
+            "op_vault": "Personal",
+            "op_item": "Okta MCP",
+            "op_username_field": "username",
+            "op_password_field": "password",
+            "op_totp_secret_field": "totp_secret",
+            "op_env_file": "/tmp/op.env",
+            "op_env_file_exists": True,
         },
     )
 
@@ -131,6 +144,50 @@ def test_okta_config_show_json(monkeypatch, capsys) -> None:
     assert payload["keyring_available"] is True
     assert payload["keyring_backend"] == "FakeKeyring"
     assert payload["default_url"] == "https://portal.example.com"
+    assert payload["credential_provider"] == "op"
+    assert payload["op_env_file"] == "/tmp/op.env"
+
+
+def test_okta_ignores_keyring_when_provider_is_op(monkeypatch) -> None:
+    async def fake_perform_login(**kwargs):
+        assert kwargs["url"] == "https://portal.example.com"
+        assert kwargs["username"] == "env-user@example.com"
+        assert kwargs["password"] == "env-secret"
+        assert kwargs["totp_secret"] == "ENVTOTP"
+        return {
+            "success": True,
+            "domain_key": "portal.example.com",
+            "message": "Session saved for portal.example.com",
+            "url": "https://portal.example.com",
+        }
+
+    monkeypatch.setattr(cli, "perform_login", fake_perform_login)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: AppSettings(
+            default_url="https://portal.example.com",
+            credential_provider="op",
+            op_env_file="/tmp/op.env",
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "load_stored_credentials",
+        lambda: StoredCredentials(
+            username="keyring-user@example.com",
+            password="keyring-secret",
+            totp_secret="KEYRINGTOTP",
+        ),
+    )
+    monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: None)
+    monkeypatch.setenv("OKTA_USERNAME", "env-user@example.com")
+    monkeypatch.setenv("OKTA_PASSWORD", "env-secret")
+    monkeypatch.setenv("OKTA_TOTP_SECRET", "ENVTOTP")
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
 
 
 def test_okta_check_json(monkeypatch, capsys) -> None:

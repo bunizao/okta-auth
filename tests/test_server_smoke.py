@@ -3,6 +3,7 @@ import json
 
 from okta_auth import server
 from okta_auth.credential_store import StoredCredentials
+from okta_auth.settings import AppSettings
 
 
 def test_server_exports_tools() -> None:
@@ -26,6 +27,7 @@ def test_okta_login_uses_stored_credentials(monkeypatch) -> None:
         return {"success": True, "url": kwargs["url"], "message": "ok", "domain_key": "example.com"}
 
     monkeypatch.setattr(server, "perform_login", fake_perform_login)
+    monkeypatch.setattr(server, "load_settings", lambda: AppSettings(credential_provider="keyring"))
     monkeypatch.setattr(
         server,
         "load_stored_credentials",
@@ -39,3 +41,17 @@ def test_okta_login_uses_stored_credentials(monkeypatch) -> None:
     payload = json.loads(asyncio.run(server.okta_login(url="https://portal.example.com")))
 
     assert payload["success"] is True
+
+
+def test_okta_login_with_op_provider_reports_env_file(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server,
+        "load_settings",
+        lambda: AppSettings(credential_provider="op", op_env_file="/tmp/op.env"),
+    )
+    monkeypatch.setattr(server, "load_stored_credentials", lambda: StoredCredentials())
+
+    payload = json.loads(asyncio.run(server.okta_login(url="https://portal.example.com")))
+
+    assert payload["success"] is False
+    assert "op run --env-file=/tmp/op.env" in payload["message"]

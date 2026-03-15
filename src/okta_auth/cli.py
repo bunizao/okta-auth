@@ -13,9 +13,20 @@ from typing import Any, Sequence
 from okta_auth.auth import session_store
 from okta_auth.auth.login import perform_login, verify_session
 from okta_auth.config_wizard import ConfigWizard
-from okta_auth.credential_store import CredentialStoreError, clear_credentials, get_store_status
+from okta_auth.credential_store import (
+    CredentialStoreError,
+    StoredCredentials,
+    clear_credentials,
+    get_store_status,
+)
 from okta_auth.credential_store import load_credentials as load_stored_credentials
-from okta_auth.settings import clear_settings, describe_settings, load_settings
+from okta_auth.settings import (
+    clear_op_env_file,
+    clear_settings,
+    describe_settings,
+    load_settings,
+    uses_keyring,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -65,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
         "config",
         help="Open the interactive credential wizard or inspect stored configuration.",
     )
+    config_parser.add_argument(
+        "--provider",
+        choices=["keyring", "op"],
+        help="Force the wizard to configure a specific credential provider.",
+    )
     config_parser.add_argument("--show", action="store_true", help="Show stored config status.")
     config_parser.add_argument("--reset", action="store_true", help="Delete stored credentials.")
     config_parser.add_argument("--yes", action="store_true", help="Skip the reset confirmation.")
@@ -106,7 +122,9 @@ async def run_cli(args: argparse.Namespace) -> int:
 
 async def _run_login(args: argparse.Namespace) -> int:
     stored_settings = load_settings()
-    stored_credentials = load_stored_credentials()
+    stored_credentials = (
+        load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
+    )
     url = _require_value(args.url or stored_settings.default_url, "Target URL", secret=False)
     username = _resolve_login_value(
         args.username,
@@ -231,7 +249,7 @@ def _run_config(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({"error": "--json is only supported with --show or --reset"}, indent=2))
         return 1
-    return ConfigWizard().run()
+    return ConfigWizard(provider=args.provider).run()
 
 
 def _require_value(value: str | None, label: str, *, secret: bool) -> str:
@@ -298,6 +316,7 @@ def _show_config_status(*, use_json: bool) -> int:
     credential_status = get_store_status()
     settings_status = describe_settings()
     payload = {
+        "credential_provider": settings_status["credential_provider"],
         "keyring_available": credential_status["available"],
         "keyring_backend": credential_status["backend"],
         "keyring_error": credential_status["error"],
@@ -306,12 +325,17 @@ def _show_config_status(*, use_json: bool) -> int:
         "totp_secret_stored": credential_status.get("totp_secret_stored", False),
         "default_url": settings_status["default_url"],
         "config_path": settings_status["config_path"],
+        "op_vault": settings_status["op_vault"],
+        "op_item": settings_status["op_item"],
+        "op_env_file": settings_status["op_env_file"],
+        "op_env_file_exists": settings_status["op_env_file_exists"],
     }
 
     if use_json:
         print(json.dumps(payload, indent=2))
         return 0
 
+    print(f"Credential provider: {payload['credential_provider']}")
     print(f"Keyring available: {'yes' if payload['keyring_available'] else 'no'}")
     print(f"Keyring backend: {payload['keyring_backend']}")
     if payload["keyring_error"]:
@@ -320,6 +344,11 @@ def _show_config_status(*, use_json: bool) -> int:
     print(f"Password stored: {'yes' if payload['password_stored'] else 'no'}")
     print(f"TOTP secret stored: {'yes' if payload['totp_secret_stored'] else 'no'}")
     print(f"Default URL: {payload['default_url'] or '(not set)'}")
+    if payload["credential_provider"] == "op":
+        print(f"1Password vault: {payload['op_vault'] or '(not set)'}")
+        print(f"1Password item: {payload['op_item'] or '(not set)'}")
+        print(f"op env file: {payload['op_env_file'] or '(not set)'}")
+        print(f"op env file exists: {'yes' if payload['op_env_file_exists'] else 'no'}")
     print(f"Settings file: {payload['config_path']}")
     return 0
 
@@ -339,17 +368,18 @@ def _reset_config(args: argparse.Namespace) -> int:
                 print(message)
             return 1
 
+    keyring_error = None
     try:
         clear_credentials()
     except CredentialStoreError as exc:
-        if args.json:
-            print(json.dumps({"deleted": False, "message": str(exc)}, indent=2))
-        else:
-            print(str(exc), file=sys.stderr)
-        return 1
+        keyring_error = str(exc)
 
+    clear_op_env_file(load_settings())
     clear_settings()
-    payload = {"deleted": True, "message": "Stored credentials and local settings deleted."}
+    message = "Stored credentials and local settings deleted."
+    if keyring_error:
+        message = f"{message} Keyring cleanup skipped: {keyring_error}"
+    payload = {"deleted": True, "message": message}
     if args.json:
         print(json.dumps(payload, indent=2))
     else:

@@ -12,7 +12,9 @@ from mcp.server.fastmcp import FastMCP
 
 from okta_auth.auth import session_store
 from okta_auth.auth.login import perform_login, verify_session
+from okta_auth.credential_store import StoredCredentials
 from okta_auth.credential_store import load_credentials as load_stored_credentials
+from okta_auth.settings import load_settings, uses_keyring
 
 mcp = FastMCP("okta_auth")
 
@@ -59,7 +61,10 @@ async def okta_login(
     Returns:
         JSON: {"success": bool, "domain_key": str|null, "message": str, "url": str}
     """
-    stored_credentials = load_stored_credentials()
+    app_settings = load_settings()
+    stored_credentials = (
+        load_stored_credentials() if uses_keyring(app_settings) else StoredCredentials()
+    )
     resolved_username = username or os.environ.get("OKTA_USERNAME") or stored_credentials.username
     resolved_password = password or os.environ.get("OKTA_PASSWORD") or stored_credentials.password
     resolved_totp = (
@@ -67,13 +72,19 @@ async def okta_login(
     )
 
     if not resolved_username or not resolved_password:
+        provider_hint = "run `okta config`."
+        if app_settings.credential_provider == "op" and app_settings.op_env_file:
+            provider_hint = (
+                "run `op run --env-file="
+                f"{app_settings.op_env_file} -- uvx --from okta-auth-cli okta-auth`."
+            )
         return json.dumps(
             {
                 "success": False,
                 "domain_key": None,
                 "message": (
                     "username and password are required. Pass them as arguments, set "
-                    "OKTA_USERNAME / OKTA_PASSWORD, or run `okta config`."
+                    f"OKTA_USERNAME / OKTA_PASSWORD, or {provider_hint}"
                 ),
                 "url": url,
             },
