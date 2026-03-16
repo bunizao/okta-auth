@@ -1,6 +1,6 @@
 [project]
 name = "okta-auth-cli"
-version = "0.2.1"
+version = "0.2.2"
 description = "Okta login toolkit with an interactive CLI and MCP session reuse"
 readme = "README.md"
 requires-python = ">=3.11"
