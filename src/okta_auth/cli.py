@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from getpass import getpass
 from typing import Any, Sequence
@@ -20,6 +19,7 @@ from okta_auth.credential_store import (
     get_store_status,
 )
 from okta_auth.credential_store import load_credentials as load_stored_credentials
+from okta_auth.runtime_credentials import resolve_runtime_credentials
 from okta_auth.settings import (
     clear_op_env_file,
     clear_settings,
@@ -126,25 +126,16 @@ async def _run_login(args: argparse.Namespace) -> int:
         load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
     )
     url = _require_value(args.url or stored_settings.default_url, "Target URL", secret=False)
-    username = _resolve_login_value(
-        args.username,
-        "OKTA_USERNAME",
-        stored_credentials.username,
-        "Username",
+    username, password, totp_secret, _ = resolve_runtime_credentials(
+        explicit_username=args.username,
+        explicit_password=args.password,
+        explicit_totp_secret=args.totp_secret,
+        app_settings=stored_settings,
+        stored_credentials=stored_credentials,
     )
-    password = _resolve_login_value(
-        args.password,
-        "OKTA_PASSWORD",
-        stored_credentials.password,
-        "Password",
-        secret=True,
-    )
-    totp_secret = _resolve_optional_value(
-        args.totp_secret,
-        "OKTA_TOTP_SECRET",
-        stored_credentials.totp_secret,
-        "TOTP secret",
-    )
+    username = _require_value(username, "Username", secret=False)
+    password = _require_value(password, "Password", secret=True)
+    totp_secret = _prompt_optional_value(totp_secret, "TOTP secret")
 
     result = await perform_login(
         url=url,
@@ -265,28 +256,10 @@ def _require_value(value: str | None, label: str, *, secret: bool) -> str:
         print(f"{label} is required.", file=sys.stderr)
 
 
-def _resolve_login_value(
-    explicit_value: str | None,
-    env_name: str,
-    stored_value: str | None,
-    label: str,
-    *,
-    secret: bool = False,
-) -> str:
-    return _require_value(
-        explicit_value or os.environ.get(env_name) or stored_value,
-        label,
-        secret=secret,
-    )
-
-
-def _resolve_optional_value(
-    explicit_value: str | None,
-    env_name: str,
-    stored_value: str | None,
+def _prompt_optional_value(
+    value: str | None,
     label: str,
 ) -> str | None:
-    value = explicit_value or os.environ.get(env_name) or stored_value
     if value:
         return value
     if not sys.stdin.isatty():

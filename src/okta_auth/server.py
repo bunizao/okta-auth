@@ -5,7 +5,6 @@ and verify session validity. Sessions are stored per-domain in ~/.okta-auth/sess
 """
 
 import json
-import os
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -14,6 +13,7 @@ from okta_auth.auth import session_store
 from okta_auth.auth.login import perform_login, verify_session
 from okta_auth.credential_store import StoredCredentials
 from okta_auth.credential_store import load_credentials as load_stored_credentials
+from okta_auth.runtime_credentials import resolve_runtime_credentials
 from okta_auth.settings import load_settings, uses_keyring
 
 mcp = FastMCP("okta_auth")
@@ -66,10 +66,12 @@ async def okta_login(
     stored_credentials = (
         load_stored_credentials() if uses_keyring(app_settings) else StoredCredentials()
     )
-    resolved_username = username or os.environ.get("OKTA_USERNAME") or stored_credentials.username
-    resolved_password = password or os.environ.get("OKTA_PASSWORD") or stored_credentials.password
-    resolved_totp = (
-        totp_secret or os.environ.get("OKTA_TOTP_SECRET") or stored_credentials.totp_secret
+    resolved_username, resolved_password, resolved_totp, _ = resolve_runtime_credentials(
+        explicit_username=username,
+        explicit_password=password,
+        explicit_totp_secret=totp_secret,
+        app_settings=app_settings,
+        stored_credentials=stored_credentials,
     )
 
     if not resolved_username or not resolved_password:

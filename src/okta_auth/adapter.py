@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import Any
 from urllib.parse import urlparse
 
 from okta_auth.auth.login import perform_login, verify_session
 from okta_auth.auth.session_store import get_session_path
-from okta_auth.credential_store import StoredCredentials
-from okta_auth.credential_store import load_credentials as load_stored_credentials
-from okta_auth.settings import AppSettings, load_settings, uses_keyring
+from okta_auth.runtime_credentials import resolve_runtime_credentials
+from okta_auth.settings import AppSettings
 
 
 class OktaAdapterError(RuntimeError):
@@ -109,15 +107,11 @@ def ensure_login(
 
 
 def _resolve_credentials() -> tuple[str | None, str | None, str | None, AppSettings]:
-    app_settings = load_settings()
-    stored_credentials = (
-        load_stored_credentials() if uses_keyring(app_settings) else StoredCredentials()
-    )
-
+    username, password, totp_secret, app_settings = resolve_runtime_credentials()
     return (
-        os.environ.get("OKTA_USERNAME") or stored_credentials.username,
-        os.environ.get("OKTA_PASSWORD") or stored_credentials.password,
-        os.environ.get("OKTA_TOTP_SECRET") or stored_credentials.totp_secret,
+        username,
+        password,
+        totp_secret,
         app_settings,
     )
 

@@ -14,9 +14,7 @@ from okta_auth import credential_store, settings
 InputFunc = Callable[[str], str]
 SecretInputFunc = Callable[[str], str]
 PrintFunc = Callable[..., None]
-TOTP_SECRET_GUIDE_URL = (
-    "https://github.com/bunizao/okta-auth?tab=readme-ov-file#totp-secret"
-)
+TOTP_SECRET_GUIDE_URL = "https://github.com/bunizao/okta-auth?tab=readme-ov-file#totp-secret"
 
 
 @dataclass

@@ -1,7 +1,8 @@
 import json
+import subprocess
 from pathlib import Path
 
-from okta_auth import cli
+from okta_auth import cli, runtime_credentials
 from okta_auth.credential_store import CredentialStoreError, StoredCredentials
 from okta_auth.settings import AppSettings
 
@@ -225,6 +226,54 @@ def test_okta_ignores_keyring_when_provider_is_op(monkeypatch) -> None:
     monkeypatch.setenv("OKTA_USERNAME", "env-user@example.com")
     monkeypatch.setenv("OKTA_PASSWORD", "env-secret")
     monkeypatch.setenv("OKTA_TOTP_SECRET", "ENVTOTP")
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
+
+
+def test_okta_resolves_op_references_from_environment(monkeypatch) -> None:
+    async def fake_perform_login(**kwargs):
+        assert kwargs["url"] == "https://portal.example.com"
+        assert kwargs["username"] == "resolved-user@example.com"
+        assert kwargs["password"] == "resolved-secret"
+        assert kwargs["totp_secret"] == "RESOLVEDTOTP"
+        return {
+            "success": True,
+            "domain_key": "portal.example.com",
+            "message": "Session saved for portal.example.com",
+            "url": "https://portal.example.com",
+        }
+
+    monkeypatch.setattr(cli, "perform_login", fake_perform_login)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: AppSettings(
+            default_url="https://portal.example.com",
+            credential_provider="op",
+        ),
+    )
+    monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: None)
+    monkeypatch.setenv("OKTA_USERNAME", "op://Private/Okta/username")
+    monkeypatch.setenv("OKTA_PASSWORD", "op://Private/Okta/password")
+    monkeypatch.setenv("OKTA_TOTP_SECRET", "op://Private/Okta/totp_secret")
+    monkeypatch.setattr(runtime_credentials.shutil, "which", lambda command: "/usr/local/bin/op")
+
+    def fake_run(cmd, *, check, capture_output, text, timeout):
+        mapping = {
+            "op://Private/Okta/username": "resolved-user@example.com\n",
+            "op://Private/Okta/password": "resolved-secret\n",
+            "op://Private/Okta/totp_secret": "RESOLVEDTOTP\n",
+        }
+        assert cmd[:2] == ["/usr/local/bin/op", "read"]
+        assert check is True
+        assert capture_output is True
+        assert text is True
+        assert timeout == 10
+        return subprocess.CompletedProcess(cmd, 0, stdout=mapping[cmd[2]], stderr="")
+
+    monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)
 
     exit_code = cli.main([])
 
