@@ -113,6 +113,11 @@ def list_sessions() -> List[Dict[str, Any]]:
             with open(meta_file, "r", encoding="utf-8") as f:
                 meta = json.load(f)
             session_file = _session_path(meta["domain_key"])
+            if "cookie_count" not in meta or "origin_count" not in meta:
+                with open(session_file, "r", encoding="utf-8") as f:
+                    session_data = json.load(f)
+                meta["cookie_count"] = len(session_data.get("cookies", []))
+                meta["origin_count"] = len(session_data.get("origins", []))
             meta["session_file_exists"] = session_file.exists()
             sessions.append(meta)
         except Exception:

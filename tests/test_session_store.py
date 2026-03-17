@@ -68,3 +68,36 @@ def test_ensure_sessions_dir_migrates_legacy_sessions(tmp_path, monkeypatch) -> 
     assert ensured == new_sessions_dir
     assert (new_sessions_dir / "portal.example.com.json").exists()
     assert not stored.exists()
+
+
+def test_list_sessions_backfills_missing_counts_from_storage_state(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    session_store.ensure_sessions_dir()
+
+    key = "portal.example.com"
+    (session_store.SESSIONS_DIR / f"{key}.json").write_text(
+        json.dumps(
+            {
+                "cookies": [{"name": "sid"}, {"name": "csrf"}],
+                "origins": [{"origin": "https://portal.example.com"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (session_store.SESSIONS_DIR / f"{key}.meta.json").write_text(
+        json.dumps(
+            {
+                "url": "https://portal.example.com/student",
+                "domain_key": key,
+                "saved_at": 1,
+                "saved_at_iso": "1970-01-01T00:00:01Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sessions = session_store.list_sessions()
+
+    assert len(sessions) == 1
+    assert sessions[0]["cookie_count"] == 2
+    assert sessions[0]["origin_count"] == 1

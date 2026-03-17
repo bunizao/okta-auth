@@ -149,6 +149,40 @@ def test_okta_config_show_json(monkeypatch, capsys) -> None:
     assert payload["op_env_file"] == "/tmp/op.env"
 
 
+def test_okta_list_handles_legacy_session_metadata(monkeypatch, capsys, tmp_path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr(cli.session_store, "SESSIONS_DIR", sessions_dir)
+    sessions_dir.mkdir(parents=True)
+
+    (sessions_dir / "portal.example.com.json").write_text(
+        json.dumps(
+            {
+                "cookies": [{"name": "sid"}, {"name": "csrf"}],
+                "origins": [{"origin": "https://portal.example.com"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sessions_dir / "portal.example.com.meta.json").write_text(
+        json.dumps(
+            {
+                "url": "https://portal.example.com/student",
+                "domain_key": "portal.example.com",
+                "saved_at": 1,
+                "saved_at_iso": "1970-01-01T00:00:01Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(["list"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Saved sessions: 1" in output
+    assert "cookies 2 | origins 1" in output
+
+
 def test_okta_config_reset_reports_failure_when_keyring_cleanup_fails(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli,
