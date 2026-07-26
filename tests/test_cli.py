@@ -69,6 +69,37 @@ def test_okta_login_can_enable_headed_mode(monkeypatch) -> None:
     assert exit_code == 0
 
 
+def test_okta_login_passes_the_settle_budget(monkeypatch) -> None:
+    async def fake_perform_login(**kwargs):
+        assert kwargs["settle_ms"] == 2500
+        return {
+            "success": True,
+            "domain_key": "portal.example.com",
+            "message": "Session saved for portal.example.com",
+            "url": "https://portal.example.com",
+        }
+
+    monkeypatch.setattr(cli, "perform_login", fake_perform_login)
+    monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: None)
+
+    exit_code = cli.main(
+        [
+            "login",
+            "https://portal.example.com",
+            "--username",
+            "user@example.com",
+            "--password",
+            "secret",
+            "--totp-secret",
+            "TESTTOTP",
+            "--settle-ms",
+            "2500",
+        ]
+    )
+
+    assert exit_code == 0
+
+
 def test_okta_defaults_to_stored_config(monkeypatch) -> None:
     async def fake_perform_login(**kwargs):
         assert kwargs["url"] == "https://portal.example.com"
@@ -304,7 +335,7 @@ def test_okta_resolves_op_references_from_environment(monkeypatch) -> None:
         assert check is True
         assert capture_output is True
         assert text is True
-        assert timeout == 10
+        assert timeout == 20
         return subprocess.CompletedProcess(cmd, 0, stdout=mapping[cmd[2]], stderr="")
 
     monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)

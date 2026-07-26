@@ -15,6 +15,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from okta_auth.auth import session_store
 from okta_auth.auth.totp import gen_totp
@@ -235,6 +236,7 @@ async def perform_login(
     channel: Optional[str] = None,
     headed: bool = False,
     timeout_ms: int = 60000,
+    settle_ms: int = 0,
 ) -> dict:
     """High-level login function: authenticate and store session.
 
@@ -270,6 +272,11 @@ async def perform_login(
             success = await auto_login(page, creds)
 
             if success:
+                if settle_ms > 0:
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=settle_ms)
+                    except PlaywrightTimeoutError:
+                        pass
                 await controller.context.storage_state(path=tmp_path)
                 domain_key = session_store.save_session(url, tmp_path)
                 return {

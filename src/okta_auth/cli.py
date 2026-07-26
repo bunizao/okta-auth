@@ -50,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the browser window during login. Default is headless.",
     )
     login_parser.add_argument("--timeout-ms", type=int, default=60000, help="Page timeout in ms.")
+    login_parser.add_argument(
+        "--settle-ms",
+        type=int,
+        default=0,
+        help="Wait up to this many ms for app-side authentication before saving.",
+    )
     login_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
 
     check_parser = subparsers.add_parser(
@@ -121,6 +127,8 @@ async def run_cli(args: argparse.Namespace) -> int:
 
 
 async def _run_login(args: argparse.Namespace) -> int:
+    if args.settle_ms < 0:
+        raise SystemExit("--settle-ms must be zero or greater")
     stored_settings = load_settings()
     stored_credentials = (
         load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
@@ -144,6 +152,7 @@ async def _run_login(args: argparse.Namespace) -> int:
         totp_secret=totp_secret,
         headed=args.headed,
         timeout_ms=args.timeout_ms,
+        settle_ms=args.settle_ms,
     )
     return _print_result(
         result,

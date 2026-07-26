@@ -12,6 +12,7 @@ from okta_auth.credential_store import load_credentials as load_stored_credentia
 from okta_auth.settings import AppSettings, load_settings, uses_keyring
 
 _OP_REFERENCE_PREFIX = "op://"
+_OP_READ_TIMEOUT_SECONDS = 20
 _CREDENTIAL_ENV_NAMES = (
     "OKTA_USERNAME",
     "OKTA_PASSWORD",
@@ -97,7 +98,7 @@ def _read_op_reference(reference: str) -> str | None:
             check=True,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_OP_READ_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
