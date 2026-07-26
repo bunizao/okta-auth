@@ -24,6 +24,8 @@ def test_okta_defaults_to_login(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "perform_login", fake_perform_login)
     monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: "/tmp/session.json")
     monkeypatch.setattr(cli.session_store, "SESSIONS_DIR", Path("/tmp/sessions"))
+    monkeypatch.setattr(cli, "load_settings", lambda: AppSettings())
+    monkeypatch.setattr(cli, "load_stored_credentials", lambda: StoredCredentials())
 
     exit_code = cli.main(
         [
@@ -54,6 +56,8 @@ def test_okta_login_can_enable_headed_mode(monkeypatch) -> None:
 
     monkeypatch.setattr(cli, "perform_login", fake_perform_login)
     monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: None)
+    monkeypatch.setattr(cli, "load_settings", lambda: AppSettings())
+    monkeypatch.setattr(cli, "load_stored_credentials", lambda: StoredCredentials())
 
     exit_code = cli.main(
         [
