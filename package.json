@@ -1,0 +1,45 @@
+{
+  "name": "okta-auth-cli",
+  "version": "0.3.0",
+  "description": "Sign in through Okta Identity Engine with plain HTTP (no browser), from Node, Bun or Cloudflare Workers, plus a small CLI",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "okta-auth": "dist/cli/main.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit && tsc -p tsconfig.core.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run check && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": ["okta", "sso", "saml", "idx", "identity-engine", "totp", "cloudflare-workers"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bunizao/okta-auth.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bunizao/okta-auth/issues"
+  },
+  "homepage": "https://github.com/bunizao/okta-auth#readme"
+}
