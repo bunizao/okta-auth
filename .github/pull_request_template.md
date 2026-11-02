@@ -4,9 +4,8 @@
 
 ## Validation
 
-- [ ] `ruff format --check .`
-- [ ] `ruff check .`
-- [ ] `pytest`
+- [ ] `npm run check`
+- [ ] `npm test`
 
 ## Security
 

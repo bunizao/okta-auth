@@ -1,61 +1,51 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+Guidance for coding agents working in this repository.
 
-## Project Overview
+## Project
 
-okta-auth is an Okta login toolkit with an interactive CLI and an MCP server for session reuse. It uses Playwright to automate Okta SSO and persists per-domain session state for reuse by AI agents.
+okta-auth (npm: `okta-auth-cli`) signs in to SAML apps behind Okta Identity
+Engine over plain HTTP. The core is a library that must run unchanged in
+Node 22+, Bun and Cloudflare Workers. A thin Node CLI (`okta-auth`) sits on top.
 
 ## Commands
 
 ```bash
-# Setup
-uv venv && source .venv/bin/activate
-uv pip install -e '.[dev]'
-playwright install chromium
-
-# Quality gates (run all three before submitting)
-ruff format --check .
-ruff check .
-pytest
-
-# Run single test
-pytest tests/test_session_store.py -v
-
-# Run interactive CLI
-okta
-
-# Run MCP server (stdio transport, stdout is JSON-RPC)
-okta-auth
+npm install
+npm run check   # tsc over everything, then the core again without @types/node
+npm test        # vitest
+npm run build   # tsc -> dist/
 ```
 
-## Architecture
+## Layout
 
 ```
-src/okta_auth/
-├── server.py          # FastMCP entry point, defines all 5 MCP tools
-├── log.py             # Stderr-only logging (stdout reserved for JSON-RPC)
-├── auth/
-│   ├── login.py       # auto_login() engine: selector-based form filling, portal detection, MFA/TOTP
-│   ├── session_store.py  # Per-domain session CRUD at ~/.okta-auth/sessions/
-│   └── totp.py        # pyotp wrapper for TOTP code generation
-└── browser/
-    ├── controller.py  # BrowserController async context manager, BrowserConfig dataclass
-    ├── detection.py   # Cross-platform browser executable discovery with env var overrides
-    └── helpers.py     # fill_first_match(), click_first_match(), maybe_switch_to_code_factor()
+src/
+├── index.ts      # public exports: signIn, totp, OktaSignInError, types
+├── sign-in.ts    # the flow: redirects into Okta, IDX loop, SAML post, signed-in check
+├── idx.ts        # picks the next IDX remediation and builds its body
+├── client.ts     # HTTP: host-scoped cookies, manual redirects, timeouts, HTTPS only, DT seeding
+├── cookies.ts    # host-only cookie jar and Set-Cookie parser
+├── html.ts       # stateToken and SAML form extraction, entity decoding
+├── totp.ts       # RFC 6238 over WebCrypto, base32
+├── errors.ts     # OktaSignInError codes
+└── cli/          # Node only: main.ts (commands), store.ts (~/.okta-auth), credentials.ts (env, Keychain)
+tests/
+├── fake-sso.ts   # scripted fake Okta org + Moodle-like SAML SP behind a fake fetch
+└── *.test.ts
 ```
 
-### Key Patterns
+## Rules
 
-- **Selector redundancy**: `login.py` defines 16+ CSS selectors per form field (USERNAME_SELECTORS, PASSWORD_SELECTORS, etc.) tried in priority order for broad Okta form compatibility.
-- **Portal detection**: `_is_on_portal()` confirms auth completion by checking domain change + login field absence.
-- **Session keying**: Sessions are stored as `{domain_hash}.json` + `{domain_hash}.meta.json` using the URL's netloc as the domain key.
-- **Async-first**: All I/O uses `async/await`; the server runs on asyncio via FastMCP.
-- **Browser fallback**: `BrowserController` tries the requested channel first, falls back to default Chromium on launch failure.
-
-## Code Style
-
-- **Formatter/Linter**: Ruff (line-length 100, target py311, double quotes, LF endings)
-- **Lint rules**: E, F, I (isort), B (flake8-bugbear); E501 ignored
-- **Type checking**: mypy with `check_untyped_defs = true`, `ignore_missing_imports = true`
-- **All logs go to stderr** — never print to stdout (breaks MCP stdio transport)
+- `src/*.ts` (the core) uses only `fetch`, `Headers`, `URL`, `AbortSignal` and
+  WebCrypto. No `node:` imports, `Buffer` or `process`; `tsconfig.core.json`
+  enforces it. Node-only code goes in `src/cli/`.
+- No runtime dependencies.
+- Error messages and logs never contain passwords, one-time codes, the TOTP
+  secret, state tokens, query strings or cookie values. Use `where(url)` for
+  locations. Tests assert this.
+- `signIn` never retries. A `credentials_rejected` retry can lock the account.
+- Credentials only go to the Okta host that served the sign-in page; cookies
+  only to the host that set them.
+- New IDX behaviour gets a scripted case in `tests/fake-sso.ts` and a test.
+- Never sign in to a real Okta org from tests or scripts.
