@@ -23,7 +23,8 @@
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "check": "tsc --noEmit && tsc -p tsconfig.core.json",
     "test": "vitest run",
-    "prepublishOnly": "npm run check && npm test && npm run build"
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run check && npm test"
   },
   "devDependencies": {
     "@types/node": "^24.0.10",
@@ -33,7 +34,15 @@
   "engines": {
     "node": ">=22"
   },
-  "keywords": ["okta", "sso", "saml", "idx", "identity-engine", "totp", "cloudflare-workers"],
+  "keywords": [
+    "okta",
+    "sso",
+    "saml",
+    "idx",
+    "identity-engine",
+    "totp",
+    "cloudflare-workers"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bunizao/okta-auth.git"
