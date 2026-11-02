@@ -75,9 +75,19 @@ export async function nextStep(state: IdxState, credentials: Credentials, now: n
 
   const challenge = find("challenge-authenticator");
   const challengeKey = challenge && authenticatorKey(state, challenge.relatesTo);
-  if (challenge && challengeKey && (challengeKey === PASSWORD || TOTP_KEYS.has(challengeKey))) {
+  const select = find("select-authenticator-authenticate");
+  const options = select ? authenticatorOptions(state, select) : [];
+  const usable = options.filter((option) => option.methodType !== null && canAnswer(option.key, credentials));
+  const choice = PREFERRED_KEYS.map((key) => usable.find((option) => option.key === key)).find(Boolean);
+
+  // Okta pre-selects the authenticator used last time. Answer it, unless it's a
+  // TOTP authenticator and Okta also offers one we rank higher: a Google
+  // Authenticator secret can't answer Okta Verify.
+  const switchToChoice =
+    choice !== undefined && choice.key !== PASSWORD && rank(choice.key) < rank(challengeKey);
+  if (challenge && canAnswer(challengeKey, credentials) && !switchToChoice) {
     const isPassword = challengeKey === PASSWORD;
-    const secret = isPassword ? credentials.password : await passcode(credentials, challengeKey, now);
+    const secret = isPassword ? credentials.password : await totp(credentials.totpSecret!, now);
     const credentialsField = field(challenge, "credentials");
     return {
       form: challenge.name,
@@ -90,11 +100,7 @@ export async function nextStep(state: IdxState, credentials: Credentials, now: n
     };
   }
 
-  const select = find("select-authenticator-authenticate");
   if (select) {
-    const options = authenticatorOptions(state, select);
-    const usable = options.filter((option) => option.methodType !== null && canAnswer(option.key, credentials));
-    const choice = PREFERRED_KEYS.map((key) => usable.find((option) => option.key === key)).find(Boolean);
     if (!choice) {
       throw new OktaSignInError(
         "mfa_unsupported",
@@ -115,7 +121,11 @@ export async function nextStep(state: IdxState, credentials: Credentials, now: n
 
   // Okta's current challenge is one we can't answer and it offers no alternative.
   if (challenge) {
-    throw new OktaSignInError("mfa_unsupported", `Okta asks for ${challengeKey ?? "an unknown authenticator"}`);
+    const missingSecret = challengeKey && TOTP_KEYS.has(challengeKey) ? " and no TOTP secret was given" : "";
+    throw new OktaSignInError(
+      "mfa_unsupported",
+      `Okta asks for ${challengeKey ?? "an unknown authenticator"}${missingSecret}`,
+    );
   }
 
   // Okta Verify asks how to verify after it's selected: always a TOTP code.
@@ -189,18 +199,16 @@ function canAnswer(key: string | undefined, credentials: Credentials): boolean {
   return key !== undefined && TOTP_KEYS.has(key) && credentials.totpSecret !== undefined;
 }
 
+function rank(key: string | undefined): number {
+  const index = key === undefined ? -1 : PREFERRED_KEYS.indexOf(key);
+  return index < 0 ? PREFERRED_KEYS.length : index;
+}
+
 function describe(options: AuthenticatorOption[]): string {
   if (!options.length) return "no authenticators";
   return options
     .map((option) => `${option.key ?? "unknown"}${option.methods.length ? ` (${option.methods.join("/")})` : ""}`)
     .join(", ");
-}
-
-async function passcode(credentials: Credentials, key: string, now: number): Promise<string> {
-  if (credentials.totpSecret === undefined) {
-    throw new OktaSignInError("mfa_unsupported", `Okta asks for a ${key} code and no TOTP secret was given`);
-  }
-  return totp(credentials.totpSecret, now);
 }
 
 function field(form: { value?: IdxField[] } | undefined, name: string): IdxField | undefined {

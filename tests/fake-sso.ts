@@ -27,6 +27,9 @@ export interface FakeOptions {
   enrollments?: Enrollment[];
   // Okta asks for the password on the identify form instead of a later step.
   passwordOnIdentify?: boolean;
+  // After the password, Okta challenges this enrollment straight away (the one
+  // used last time) and offers the rest through select-authenticator.
+  preselect?: Enrollment;
   // Okta already has a session for every request (say, a browser's cookies).
   oktaSession?: boolean;
   // The SP refuses the SAML response.
@@ -144,7 +147,7 @@ export function fakeSso(options: FakeOptions) {
         if (body.identifier !== USERNAME) return json(400, { messages: errorMessages("idx.unknown.user") });
         if (!options.passwordOnIdentify) return json(200, passwordState());
         if (body.credentials?.passcode !== PASSWORD) return json(401, passwordState("incorrectPassword"));
-        return json(200, selectState(enrollments));
+        return json(200, afterPassword());
       }
       case "/idp/idx/challenge": {
         const chosen = enrollments.find((name) => ENROLLMENTS[name].id === body.authenticator?.id);
@@ -158,7 +161,7 @@ export function fakeSso(options: FakeOptions) {
       case "/idp/idx/challenge/answer": {
         if (!challenged) {
           if (body.credentials?.passcode !== PASSWORD) return json(401, passwordState("incorrectPassword"));
-          return json(200, selectState(enrollments));
+          return json(200, afterPassword());
         }
         const field = challenged === "google_otp" ? "passcode" : "totp";
         const expected = await totp(options.totpSecret ?? TOTP_SECRET, options.now());
@@ -170,6 +173,18 @@ export function fakeSso(options: FakeOptions) {
       }
     }
     return new Response("not found", { status: 404 });
+  }
+
+  function afterPassword() {
+    const select = selectState(enrollments);
+    if (!options.preselect) return select;
+    challenged = options.preselect;
+    const challenge = otpState(options.preselect);
+    return {
+      ...select,
+      ...challenge,
+      remediation: { type: "array", value: [...challenge.remediation.value, ...select.remediation.value] },
+    };
   }
 
   return {

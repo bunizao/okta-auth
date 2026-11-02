@@ -99,6 +99,23 @@ describe("signIn", () => {
     expect(JSON.parse(answer!.body).credentials.totp).toMatch(/^\d{6}$/);
   });
 
+  it("switches away from a pre-selected Okta Verify to Google Authenticator", async () => {
+    const { fake, run } = setup({ enrollments: ["okta_verify", "google_otp"], preselect: "okta_verify" });
+    await run();
+
+    const [select, answer] = idxCalls(fake.requests).slice(-2);
+    expect(select!.url.pathname).toBe("/idp/idx/challenge");
+    expect(JSON.parse(select!.body).authenticator).toEqual({ id: "aut-google", methodType: "otp" });
+    expect(JSON.parse(answer!.body).credentials.passcode).toMatch(/^\d{6}$/);
+  });
+
+  it("answers a pre-selected Google Authenticator challenge directly", async () => {
+    const { fake, run } = setup({ enrollments: ["okta_verify", "google_otp"], preselect: "google_otp" });
+    await run();
+
+    expect(idxCalls(fake.requests).some((request) => request.url.pathname === "/idp/idx/challenge")).toBe(false);
+  });
+
   it("round-trips the device token so Okta sees the same device", async () => {
     const { fake, run } = setup();
     const first = await run();
