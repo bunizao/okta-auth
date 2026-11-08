@@ -42,25 +42,7 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
   const now = options.now ?? Date.now;
   const client = new Client(options.fetch ?? ((input, init) => fetch(input, init)), now, options.deviceToken);
 
-  let page = await client.follow(target);
-  if (page.status >= 400) throw httpError(page.status, page.url);
-
-  // With a live Okta session, Okta answers with the SAML form straight away.
-  if (!readSamlForm(page.body)) {
-    const stateToken = readStateToken(page.body, page.url);
-    client.useIdp(page.url.hostname);
-    page = await authenticate(client, page.url.origin, stateToken, options, now);
-  }
-
-  const form = readSamlForm(page.body);
-  if (!form) {
-    throw new OktaSignInError("unexpected_step", `Okta finished without a SAML form at ${where(page.url)}`);
-  }
-  const acs = await client.follow(new URL(form.action, page.url), {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(form.fields),
-  });
+  const acs = await handOff(client, await client.follow(target), options, now);
 
   // Signed in means the page that sent us to Okta no longer does.
   const check = await client.follow(target);
@@ -72,11 +54,39 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
     );
   }
 
-  const deviceToken = client.idpHost ? client.jar.get(client.idpHost, "DT")?.value : undefined;
   return {
     cookies: client.jar.list(target.hostname),
-    deviceToken: deviceToken ?? options.deviceToken,
+    deviceToken: deviceTokenOf(client, options.deviceToken),
   };
+}
+
+// Takes Okta's first page through sign-in (unless Okta already has a session and
+// answers with the SAML form) and posts the SAMLResponse to the service
+// provider's ACS. Returns the ACS's answer, redirects followed.
+export async function handOff(client: Client, page: Page, credentials: Credentials, now: () => number): Promise<Page> {
+  if (page.status >= 400) throw httpError(page.status, page.url);
+
+  if (!readSamlForm(page.body)) {
+    const stateToken = readStateToken(page.body, page.url);
+    client.useIdp(page.url.hostname);
+    page = await authenticate(client, page.url.origin, stateToken, credentials, now);
+  }
+
+  const form = readSamlForm(page.body);
+  if (!form) {
+    throw new OktaSignInError("unexpected_step", `Okta finished without a SAML form at ${where(page.url)}`);
+  }
+  return client.follow(new URL(form.action, page.url), {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form.fields),
+  });
+}
+
+// Okta's DT cookie after this sign-in, or the one the caller passed in.
+export function deviceTokenOf(client: Client, previous: string | undefined): string | undefined {
+  const current = client.idpHost ? client.jar.get(client.idpHost, "DT")?.value : undefined;
+  return current ?? previous;
 }
 
 // Walks the IDX remediations until Okta reports success, then follows Okta's
@@ -140,6 +150,6 @@ function oktaUrl(href: string, origin: string): URL {
   return url;
 }
 
-function httpError(status: number, url: URL, detail = ""): OktaSignInError {
+export function httpError(status: number, url: URL, detail = ""): OktaSignInError {
   return new OktaSignInError(`http_${status}`, `${where(url)} answered HTTP ${status}${detail}`);
 }

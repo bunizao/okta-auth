@@ -6,6 +6,7 @@ export type Fetch = (input: string, init: RequestInit) => Promise<Response>;
 export interface Page {
   url: URL;
   status: number;
+  headers: Headers;
   body: string;
 }
 
@@ -53,7 +54,7 @@ export class Client {
     if (url.searchParams.has("SAMLRequest")) this.useIdp(url.hostname);
 
     const headers = new Headers(init.headers);
-    headers.set("user-agent", USER_AGENT);
+    if (!headers.has("user-agent")) headers.set("user-agent", USER_AGENT);
     const cookie = this.jar.header(url);
     if (cookie) headers.set("cookie", cookie);
 
@@ -85,7 +86,7 @@ export class Client {
         init = undefined;
         continue;
       }
-      return { url, status: response.status, body: await response.text() };
+      return { url, status: response.status, headers: response.headers, body: await response.text() };
     }
     throw new OktaSignInError("unexpected_step", `more than ${MAX_REDIRECTS} redirects, last at ${where(url)}`);
   }

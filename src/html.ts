@@ -26,23 +26,24 @@ export function readStateToken(html: string, url: URL): string {
 }
 
 // Okta finishes with an auto-submitting form that carries the SAMLResponse to the
-// service provider. Attribute values are HTML-entity-encoded.
-export function readSamlForm(html: string): SamlForm | undefined {
+// service provider; a GlobalProtect POST binding starts with one that carries the
+// SAMLRequest to Okta. Attribute values are HTML-entity-encoded.
+export function readSamlForm(html: string, field: "SAMLResponse" | "SAMLRequest" = "SAMLResponse"): SamlForm | undefined {
   const inputs = [...html.matchAll(/<input\b[^>]*>/gi)].map((match) => ({
     index: match.index,
     attributes: readAttributes(match[0]),
   }));
-  const response = inputs.find((input) => input.attributes.name === "SAMLResponse");
-  if (!response) return undefined;
+  const message = inputs.find((input) => input.attributes.name === field);
+  if (!message) return undefined;
 
-  const formStart = html.lastIndexOf("<form", response.index);
+  const formStart = html.lastIndexOf("<form", message.index);
   const formTag = formStart < 0 ? undefined : /<form\b[^>]*>/i.exec(html.slice(formStart))?.[0];
   const action = formTag ? readAttributes(formTag).action : undefined;
   if (!action) return undefined;
 
   const fields: Record<string, string> = {};
   for (const { attributes } of inputs) {
-    if (attributes.name === "SAMLResponse" || attributes.name === "RelayState") {
+    if (attributes.name === field || attributes.name === "RelayState") {
       fields[attributes.name] = attributes.value ?? "";
     }
   }

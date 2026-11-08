@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { OktaSignInError, signIn } from "../index.js";
+import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
 import { readCredentials } from "./credentials.js";
 import { deleteSessions, listSessions, readDeviceToken, readSession, saveDeviceToken, saveSession } from "./store.js";
 
@@ -12,6 +12,9 @@ Commands:
   status          List saved sessions
   cookies <url>   Print the saved cookies as a Cookie header (--json: full list)
   logout [url]    Delete the saved session for <url>, or every session
+  globalprotect <server> [--interface gateway|portal]
+                  Sign in to a GlobalProtect portal or gateway and print the
+                  one-time cookie for OpenConnect as JSON
 
 Credentials come from OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET, or else
 from the macOS Keychain: service "okta-auth", accounts "username", "password"
@@ -25,6 +28,7 @@ async function main(argv: string[]): Promise<number> {
     allowPositionals: true,
     options: {
       json: { type: "boolean", default: false },
+      interface: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", short: "v", default: false },
     },
@@ -51,6 +55,8 @@ async function main(argv: string[]): Promise<number> {
       return cookies(requireUrl(url), json);
     case "logout":
       return logout(url, json);
+    case "globalprotect":
+      return globalProtect(url, values.interface);
     default:
       console.error(`okta-auth: unknown command "${command}"\n\n${USAGE}`);
       return 1;
@@ -58,16 +64,10 @@ async function main(argv: string[]): Promise<number> {
 }
 
 async function login(url: string, json: boolean): Promise<number> {
-  const { username, password, totpSecret } = await readCredentials();
-  if (!username || !password) {
-    console.error(
-      "okta-auth: no credentials. Set OKTA_USERNAME and OKTA_PASSWORD (and OKTA_TOTP_SECRET), " +
-        'or store them in the Keychain under service "okta-auth"; see `okta-auth --help`.',
-    );
-    return 1;
-  }
+  const credentials = await requireCredentials();
+  if (!credentials) return 1;
 
-  const result = await signIn({ url, username, password, totpSecret, deviceToken: await readDeviceToken(url) });
+  const result = await signIn({ url, ...credentials, deviceToken: await readDeviceToken(url) });
   const file = await saveSession(url, result.cookies);
   await saveDeviceToken(url, result.deviceToken);
 
@@ -75,6 +75,40 @@ async function login(url: string, json: boolean): Promise<number> {
   if (json) console.log(JSON.stringify({ host, cookies: result.cookies.length, file }, null, 2));
   else console.log(`Signed in to ${host}; saved ${result.cookies.length} cookies to ${file}`);
   return 0;
+}
+
+// Always JSON: the output is for a script that hands `cookie` to OpenConnect on
+// stdin. Nothing is saved; the cookie works once.
+async function globalProtect(server: string | undefined, iface: string | undefined): Promise<number> {
+  if (!server) throw new TypeError("this command needs a server, e.g. vpn.gp.monash.edu");
+  if (iface !== undefined && iface !== "gateway" && iface !== "portal") {
+    throw new TypeError('--interface must be "gateway" or "portal"');
+  }
+  const credentials = await requireCredentials();
+  if (!credentials) return 1;
+
+  const tokenKey = `https://${server}/`;
+  const result = await signInGlobalProtect({
+    server,
+    interface: iface as GlobalProtectInterface | undefined,
+    ...credentials,
+    deviceToken: await readDeviceToken(tokenKey),
+  });
+  await saveDeviceToken(tokenKey, result.deviceToken);
+
+  const { deviceToken: _, ...output } = result;
+  console.log(JSON.stringify({ server, ...output }, null, 2));
+  return 0;
+}
+
+async function requireCredentials(): Promise<{ username: string; password: string; totpSecret?: string } | undefined> {
+  const { username, password, totpSecret } = await readCredentials();
+  if (username && password) return { username, password, totpSecret };
+  console.error(
+    "okta-auth: no credentials. Set OKTA_USERNAME and OKTA_PASSWORD (and OKTA_TOTP_SECRET), " +
+      'or store them in the Keychain under service "okta-auth"; see `okta-auth --help`.',
+  );
+  return undefined;
 }
 
 async function status(json: boolean): Promise<number> {

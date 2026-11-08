@@ -1,7 +1,8 @@
 import { totp } from "../src/totp.js";
 
-// A scripted Okta Identity Engine org (example.okta.com) and a Moodle-like SAML
-// service provider (learning.example.edu), served through a fake fetch.
+// A scripted Okta Identity Engine org (example.okta.com), a Moodle-like SAML
+// service provider (learning.example.edu) and a GlobalProtect portal
+// (vpn.example.edu), served through a fake fetch.
 
 export const SP = "learning.example.edu";
 export const OKTA = "example.okta.com";
@@ -11,11 +12,19 @@ export const PASSWORD = "correct horse battery staple";
 export const TOTP_SECRET = "JBSWY3DPEHPK3PXP";
 export const STATE_TOKEN = "02.id.abc-def";
 export const SAML_RESPONSE = "PHNhbWw+";
+export const GP = "vpn.example.edu";
+export const GP_COOKIE = "gp-cookie-1";
 
 const RELAY_STATE = `https://${SP}/my/`;
 const IDX = "application/ion+json; okta-version=1.0.0";
 const APP_PATH = "/app/example_moodle/exk1/sso/saml";
 const ACS_PATH = `/auth/saml2/sp/saml2-acs.php/${SP}`;
+const GP_APP_PATH = "/app/example_gp/exk2/sso/saml";
+const GP_ACS_PATH = "/SAML20/SP/ACS";
+const GP_RELAY_STATE = "gp-relay";
+const PRELOGIN_PATHS = { gateway: "/ssl-vpn/prelogin.esp", portal: "/global-protect/prelogin.esp" } as const;
+
+export type GpInterface = keyof typeof PRELOGIN_PATHS;
 
 export type Enrollment = "google_otp" | "okta_verify" | "okta_verify_push";
 
@@ -32,8 +41,14 @@ export interface FakeOptions {
   preselect?: Enrollment;
   // Okta already has a session for every request (say, a browser's cookies).
   oktaSession?: boolean;
-  // The SP refuses the SAML response.
+  // The SP (or the GlobalProtect ACS) refuses the SAML response.
   spRejects?: boolean;
+  // How GlobalProtect prelogin hands over the SAMLRequest.
+  gpBinding?: "REDIRECT" | "POST";
+  // GlobalProtect interfaces whose prelogin offers SAML; the rest answer Error.
+  gpSaml?: GpInterface[];
+  // Where the GlobalProtect ACS reports the result.
+  gpResultIn?: "headers" | "comment";
 }
 
 export interface RecordedRequest {
@@ -74,6 +89,10 @@ export function fakeSso(options: FakeOptions) {
   const enrollments = options.enrollments ?? ["okta_verify_push", "google_otp"];
   let issuedDevices = 0;
   let challenged: Enrollment | undefined;
+  // The Okta app the current sign-in is for, so the success link returns to it.
+  let appPath = APP_PATH;
+  // The GlobalProtect interface whose prelogin started the sign-in.
+  let gpInterface: GpInterface | undefined;
   // Lets a test replace any route.
   let override: ((request: RecordedRequest) => Response | undefined) | undefined;
 
@@ -90,6 +109,7 @@ export function fakeSso(options: FakeOptions) {
     if (routed) return routed;
     if (request.url.hostname === SP) return serviceProvider(request);
     if (request.url.hostname === OKTA) return okta(request);
+    if (request.url.hostname === GP) return globalProtect(request);
     return new Response("unknown host", { status: 502 });
   }
 
@@ -123,12 +143,17 @@ export function fakeSso(options: FakeOptions) {
     if (!cookies.has("JSESSIONID")) cookieLines.push("JSESSIONID=j-1; Path=/; Secure; HttpOnly");
     const hasSession = options.oktaSession || cookies.get("sid") === "okta-session";
 
-    if (method === "GET" && url.pathname === APP_PATH) {
-      if (hasSession) return html(samlFormPage(), cookieLines);
+    if ((method === "GET" && url.pathname === APP_PATH) || url.pathname === GP_APP_PATH) {
+      if (url.pathname === GP_APP_PATH) {
+        const samlRequest = method === "POST" ? new URLSearchParams(request.body).get("SAMLRequest") : null;
+        if (method === "POST" && samlRequest !== "gprequest") return new Response("bad request", { status: 400 });
+      }
+      appPath = url.pathname;
+      if (hasSession) return html(appPath === GP_APP_PATH ? gpSamlFormPage() : samlFormPage(), cookieLines);
       return html(`<script>var stateToken = '02.id.abc\\x2Ddef';</script>`, cookieLines);
     }
     if (method === "GET" && url.pathname === "/login/token/redirect") {
-      return redirect(`https://${OKTA}${APP_PATH}`, [...cookieLines, "sid=okta-session; Path=/; Secure; HttpOnly"]);
+      return redirect(`https://${OKTA}${appPath}`, [...cookieLines, "sid=okta-session; Path=/; Secure; HttpOnly"]);
     }
     if (method !== "POST" || !url.pathname.startsWith("/idp/idx/")) return new Response("not found", { status: 404 });
     if (request.headers.get("accept") !== IDX || request.headers.get("content-type") !== IDX) {
@@ -175,6 +200,49 @@ export function fakeSso(options: FakeOptions) {
     return new Response("not found", { status: 404 });
   }
 
+  function globalProtect({ method, url, headers, body }: RecordedRequest): Response {
+    const prelogin = (Object.keys(PRELOGIN_PATHS) as GpInterface[]).find((name) => PRELOGIN_PATHS[name] === url.pathname);
+    if (method === "POST" && prelogin) {
+      if (headers.get("user-agent") !== "PAN GlobalProtect") return new Response("forbidden", { status: 403 });
+      if (!(options.gpSaml ?? ["gateway", "portal"]).includes(prelogin)) {
+        return xml("<prelogin-response><status>Error</status><msg>Gateway is not configured</msg></prelogin-response>");
+      }
+      gpInterface = prelogin;
+      const binding = options.gpBinding ?? "REDIRECT";
+      const request =
+        binding === "REDIRECT"
+          ? `https://${OKTA}${GP_APP_PATH}?SAMLRequest=gprequest&RelayState=${GP_RELAY_STATE}`
+          : `<html><body><form id="myform" method="POST" action="https://${OKTA}${GP_APP_PATH}">` +
+            `<input type="hidden" name="SAMLRequest" value="gprequest" />` +
+            `<input type="hidden" name="RelayState" value="${GP_RELAY_STATE}" /></form></body></html>`;
+      return xml(
+        "<prelogin-response><status>Success</status><msg></msg>" +
+          `<saml-auth-method>${binding}</saml-auth-method><saml-request>${btoa(request)}</saml-request>` +
+          "<region>AU</region></prelogin-response>",
+        ["PHPSESSID=gp-anon; Path=/; Secure; HttpOnly"],
+      );
+    }
+    if (method === "POST" && url.pathname === GP_ACS_PATH) {
+      const form = new URLSearchParams(body);
+      const accepted =
+        !options.spRejects && form.get("SAMLResponse") === SAML_RESPONSE && form.get("RelayState") === GP_RELAY_STATE;
+      const fields: [string, string][] = accepted
+        ? [
+            ["saml-auth-status", "1"],
+            ["saml-username", USERNAME],
+            gpInterface === "portal" ? ["portal-userauthcookie", GP_COOKIE] : ["prelogin-cookie", GP_COOKIE],
+            gpInterface === "portal" ? ["prelogin-cookie", "empty"] : ["portal-userauthcookie", "empty"],
+          ]
+        : [["saml-auth-status", "-1"]];
+      if (options.gpResultIn === "comment") {
+        const comment = fields.map(([name, value]) => `<${name}>${value}</${name}>`).join("");
+        return html(`<html><!-- ${comment} --><body>Login Successful!</body></html>`);
+      }
+      return new Response("<html><body>Login Successful!</body></html>", { status: 200, headers: new Headers(fields) });
+    }
+    return new Response("not found", { status: 404 });
+  }
+
   function afterPassword() {
     const select = selectState(enrollments);
     if (!options.preselect) return select;
@@ -202,6 +270,15 @@ export function samlFormPage(): string {
 <form id="appForm" action="${entities(`https://${SP}${ACS_PATH}`)}" method="POST">
 <input name="SAMLResponse" type="hidden" value="${entities(SAML_RESPONSE)}"/>
 <input name="RelayState" type="hidden" value="${entities(RELAY_STATE)}"/>
+</form></body></html>`;
+}
+
+// What Okta posts to the GlobalProtect ACS.
+export function gpSamlFormPage(): string {
+  return `<html><body onload="document.forms[0].submit()">
+<form id="appForm" action="https&#x3a;&#x2f;&#x2f;${GP}${GP_ACS_PATH}" method="POST">
+<input name="SAMLResponse" type="hidden" value="${SAML_RESPONSE.replace("+", "&#x2b;")}"/>
+<input name="RelayState" type="hidden" value="${GP_RELAY_STATE}"/>
 </form></body></html>`;
 }
 
@@ -356,6 +433,10 @@ function html(body: string, cookies: string[] = []): Response {
 
 function redirect(location: string, cookies: string[] = []): Response {
   return new Response(null, { status: 303, headers: withCookies(new Headers({ location }), cookies) });
+}
+
+function xml(body: string, cookies: string[] = []): Response {
+  return new Response(body, { status: 200, headers: withCookies(new Headers({ "content-type": "application/xml" }), cookies) });
 }
 
 function json(status: number, body: unknown): Response {
