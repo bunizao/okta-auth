@@ -23,6 +23,7 @@ npm run build   # tsc -> dist/
 src/
 ├── index.ts      # public exports: signIn, totp, OktaSignInError, types
 ├── sign-in.ts    # the flow: redirects into Okta, IDX loop, SAML post, signed-in check
+├── globalprotect.ts # GP prelogin -> Okta -> ACS, returns OpenConnect's one-time cookie
 ├── idx.ts        # picks the next IDX remediation and builds its body
 ├── client.ts     # HTTP: host-scoped cookies, manual redirects, timeouts, HTTPS only, DT seeding
 ├── cookies.ts    # host-only cookie jar and Set-Cookie parser
@@ -31,7 +32,7 @@ src/
 ├── errors.ts     # OktaSignInError codes
 └── cli/          # Node only: main.ts (commands), store.ts (~/.okta-auth), credentials.ts (env, Keychain)
 tests/
-├── fake-sso.ts   # scripted fake Okta org + Moodle-like SAML SP behind a fake fetch
+├── fake-sso.ts   # scripted fake Okta org, Moodle-like SAML SP and GlobalProtect portal behind a fake fetch
 └── *.test.ts
 ```
 

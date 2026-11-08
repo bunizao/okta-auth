@@ -99,6 +99,44 @@ Okta sets a long-lived `DT` cookie to recognise a device. A sign-in without it
 looks like a new device, and orgs with sign-on notifications email the user
 every time. Store `deviceToken` and pass it back. It goes only to the Okta host.
 
+### GlobalProtect
+
+`signInGlobalProtect` signs in to a Palo Alto GlobalProtect portal or gateway
+that uses Okta SAML and returns the one-time cookie OpenConnect connects with.
+It replaces `gp-saml-gui` or a headless browser.
+
+```ts
+import { signInGlobalProtect } from "okta-auth-cli";
+
+const gp = await signInGlobalProtect({
+  server: "vpn.gp.monash.edu",
+  username, password, totpSecret, deviceToken,
+});
+// gp: { interface: "gateway", user, cookieName: "prelogin-cookie", cookie, deviceToken }
+```
+
+```ts
+interface GlobalProtectOptions {
+  server: string;                    // host only, e.g. vpn.gp.monash.edu
+  interface?: "gateway" | "portal";  // default: gateway, then portal
+  // username, password, totpSecret, deviceToken, fetch, now: as for signIn
+}
+```
+
+It POSTs to the prelogin endpoint (`/ssl-vpn/prelogin.esp` for the gateway,
+`/global-protect/prelogin.esp` for the portal), takes the SAML request in
+either binding to Okta, signs in, and reads `saml-username` and
+`prelogin-cookie` or `portal-userauthcookie` from the ACS response headers, or
+from the HTML comment older versions use. Nothing goes to Okta until a prelogin
+offers SAML. If the ACS answers without a cookie, it throws `handoff_failed`.
+
+The cookie works once. Pass it to OpenConnect on stdin:
+
+```bash
+openconnect --protocol=gp --user="$user" --usergroup="gateway:prelogin-cookie" \
+  --passwd-on-stdin vpn.gp.monash.edu <<<"$cookie"
+```
+
 ### Cloudflare Workers
 
 Nothing to configure: the package uses `fetch`, `Headers.getSetCookie()`,
@@ -119,6 +157,10 @@ okta-auth status
 okta-auth cookies https://learning.monash.edu/   # prints a Cookie header
 okta-auth logout                                 # or: okta-auth logout <url>
 ```
+
+`okta-auth globalprotect <server> [--interface gateway|portal]` prints
+`{ server, interface, user, cookieName, cookie }` as JSON and saves only the
+device token. The cookie is printed because OpenConnect needs it; don't log it.
 
 Add `--json` to any command for machine-readable output. `cookies --json`
 prints the full cookie list.
@@ -190,6 +232,8 @@ request must be HTTPS. Redirects are capped at 10 and IDX steps at 8.
   `unexpected_step`.
 - **SAML service providers** that start sign-in with an HTTP-Redirect
   `SAMLRequest`. That covers Moodle's `auth_saml2` and most SimpleSAMLphp SPs.
+- **GlobalProtect** portals whose TLS needs legacy renegotiation or a private
+  CA fail with `network` under Node's default TLS settings.
 - **TOTP second factors only:** Google Authenticator, or Okta Verify when it
   offers "Enter a code".
 - **Host-only cookies.** A cookie the SP sets for a parent domain is still
