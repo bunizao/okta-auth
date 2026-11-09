@@ -1,0 +1,301 @@
+"""Ports tests/sign-in.test.ts. Test names are the TypeScript case names in snake_case."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import traceback
+from collections.abc import Callable
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+import pytest
+
+from fake_sso import (
+    OKTA,
+    PASSWORD,
+    SP,
+    STATE_TOKEN,
+    TARGET,
+    TOTP_SECRET,
+    USERNAME,
+    FakeOptions,
+    FakeSso,
+    RecordedRequest,
+    fake_sso,
+    idx_json,
+)
+from okta_auth import OktaSignInError, SignInResult, sign_in
+
+NOW = datetime(2026, 11, 2, 3, 4, 5, tzinfo=timezone.utc).timestamp()
+
+
+def now() -> float:
+    return NOW
+
+
+def setup(
+    fake_options: dict[str, Any] | None = None, **sign_in_options: Any
+) -> tuple[FakeSso, Callable[..., SignInResult]]:
+    fake = fake_sso(FakeOptions(now=now, **(fake_options or {})))
+
+    def run(**extra: Any) -> SignInResult:
+        options: dict[str, Any] = {
+            "url": TARGET,
+            "username": USERNAME,
+            "password": PASSWORD,
+            "totp_secret": TOTP_SECRET,
+            "transport": fake.transport,
+            "now": now,
+            **sign_in_options,
+            **extra,
+        }
+        return asyncio.run(sign_in(**options))
+
+    return fake, run
+
+
+def idx_calls(requests: list[RecordedRequest]) -> list[RecordedRequest]:
+    return [request for request in requests if request.url.path.startswith("/idp/idx/")]
+
+
+def rejection(run: Callable[[], object]) -> OktaSignInError:
+    with pytest.raises(OktaSignInError) as info:
+        run()
+    return info.value
+
+
+def expect_no_secrets(error: BaseException) -> None:
+    text = f"{error} {''.join(traceback.format_exception(error))}"
+    for secret in [
+        PASSWORD,
+        TOTP_SECRET,
+        STATE_TOKEN,
+        "02.id.abc",
+        "ssp-1",
+        "j-1",
+        "dt-1",
+        "SAMLRequest=request",
+    ]:
+        assert secret not in text
+
+
+def test_signs_in_identifier_first_password_then_google_otp_over_push_then_saml() -> None:
+    fake, run = setup()
+    result = run()
+
+    assert [(c.name, c.value, c.domain) for c in result.cookies] == [
+        ("MoodleSession", "authed", SP),
+        ("MDL_SSP_SessID", "ssp-1", SP),
+    ]
+    assert result.device_token == "dt-1"
+
+    steps = [(request.url.path, json.loads(request.body)) for request in idx_calls(fake.requests)]
+    assert [path for path, _ in steps] == [
+        "/idp/idx/introspect",
+        "/idp/idx/identify",
+        "/idp/idx/challenge/answer",
+        "/idp/idx/challenge",
+        "/idp/idx/challenge/answer",
+    ]
+    # Identifier first: the identify form had no credentials field, so none went.
+    assert steps[1][1] == {"identifier": USERNAME, "stateHandle": STATE_TOKEN}
+    assert steps[2][1] == {"credentials": {"passcode": PASSWORD}, "stateHandle": STATE_TOKEN}
+    # Okta Verify (push only) was listed first; Google Authenticator was chosen.
+    assert steps[3][1] == {
+        "authenticator": {"id": "aut-google", "methodType": "otp"},
+        "stateHandle": STATE_TOKEN,
+    }
+    passcode = steps[4][1]["credentials"]["passcode"]
+    assert len(passcode) == 6 and passcode.isdigit()
+
+
+def test_sends_the_password_with_the_identifier_when_the_identify_form_asks_for_it() -> None:
+    fake, run = setup({"password_on_identify": True, "enrollments": ["google_otp"]})
+    run()
+
+    identify = next(r for r in idx_calls(fake.requests) if r.url.path == "/idp/idx/identify")
+    assert json.loads(identify.body) == {
+        "identifier": USERNAME,
+        "credentials": {"passcode": PASSWORD},
+        "stateHandle": STATE_TOKEN,
+    }
+
+
+def test_answers_okta_verify_with_a_totp_code_in_the_field_okta_names() -> None:
+    fake, run = setup({"enrollments": ["okta_verify"]})
+    run()
+
+    select, answer = idx_calls(fake.requests)[-2:]
+    assert json.loads(select.body)["authenticator"] == {"id": "aut-verify", "methodType": "totp"}
+    code = json.loads(answer.body)["credentials"]["totp"]
+    assert len(code) == 6 and code.isdigit()
+
+
+def test_switches_away_from_a_pre_selected_okta_verify_to_google_authenticator() -> None:
+    fake, run = setup({"enrollments": ["okta_verify", "google_otp"], "preselect": "okta_verify"})
+    run()
+
+    select, answer = idx_calls(fake.requests)[-2:]
+    assert select.url.path == "/idp/idx/challenge"
+    assert json.loads(select.body)["authenticator"] == {"id": "aut-google", "methodType": "otp"}
+    code = json.loads(answer.body)["credentials"]["passcode"]
+    assert len(code) == 6 and code.isdigit()
+
+
+def test_answers_a_pre_selected_google_authenticator_challenge_directly() -> None:
+    fake, run = setup({"enrollments": ["okta_verify", "google_otp"], "preselect": "google_otp"})
+    run()
+
+    assert not any(r.url.path == "/idp/idx/challenge" for r in idx_calls(fake.requests))
+
+
+def test_round_trips_the_device_token_so_okta_sees_the_same_device() -> None:
+    fake, run = setup()
+    first = run()
+    assert first.device_token == "dt-1"
+
+    fake.requests.clear()
+    second = run(device_token=first.device_token)
+    assert second.device_token == "dt-1"
+
+    # The very first request to Okta already carries it.
+    okta_requests = [r for r in fake.requests if r.url.host == OKTA]
+    assert "SAMLRequest" in okta_requests[0].url.params
+    assert okta_requests[0].cookies.get("DT") == "dt-1"
+    assert all(r.cookies.get("DT") == "dt-1" for r in okta_requests)
+
+
+def test_never_sends_one_host_s_cookies_to_another_host() -> None:
+    fake, run = setup()
+    result = run()
+
+    okta_cookies = {"DT", "JSESSIONID", "sid"}
+    sp_cookies = {"MoodleSession", "MDL_SSP_SessID"}
+    for request in fake.requests:
+        names = set(request.cookies)
+        if request.url.host == OKTA:
+            assert not names & sp_cookies
+        if request.url.host == SP:
+            assert not names & okta_cookies
+    assert all(cookie.domain == SP for cookie in result.cookies)
+
+
+def test_stops_after_one_wrong_password_with_credentials_rejected() -> None:
+    fake, run = setup(password="wrong password")
+    error = rejection(run)
+
+    assert error.code == "credentials_rejected"
+    assert "incorrectPassword" in str(error)
+    attempts = [r for r in idx_calls(fake.requests) if r.url.path == "/idp/idx/challenge/answer"]
+    assert len(attempts) == 1
+    assert not any(r.url.path == "/login/token/redirect" for r in fake.requests)
+    expect_no_secrets(error)
+
+
+def test_reports_a_wrong_one_time_code_as_passcode_rejected() -> None:
+    _, run = setup({"totp_secret": "KRSXG5CTMVRXEZLUKN2XAZLSKNSWG4TFOQ"})
+    error = rejection(run)
+
+    assert error.code == "passcode_rejected"
+    assert "api.authn.otp.invalid" in str(error)
+    expect_no_secrets(error)
+
+
+def test_refuses_push_only_enrollment_with_mfa_unsupported() -> None:
+    fake, run = setup({"enrollments": ["okta_verify_push"]})
+    error = rejection(run)
+
+    assert error.code == "mfa_unsupported"
+    assert "okta_verify (push)" in str(error)
+    assert not any(r.url.path == "/idp/idx/challenge" for r in idx_calls(fake.requests))
+
+
+def test_skips_idx_when_okta_already_has_a_session() -> None:
+    fake, run = setup({"okta_session": True})
+    result = run()
+
+    assert idx_calls(fake.requests) == []
+    assert next(c.value for c in result.cookies if c.name == "MoodleSession") == "authed"
+
+
+def test_reports_handoff_failed_when_the_service_provider_rejects_the_saml_response() -> None:
+    _, run = setup({"sp_rejects": True})
+    error = rejection(run)
+
+    assert error.code == "handoff_failed"
+    assert OKTA in str(error)
+    expect_no_secrets(error)
+
+
+def test_gives_up_after_eight_idx_steps() -> None:
+    fake, run = setup()
+    skip = {
+        "name": "skip",
+        "href": f"https://{OKTA}/idp/idx/skip",
+        "value": [{"name": "stateHandle", "value": STATE_TOKEN}],
+    }
+    fake.set_override(
+        lambda request: (
+            idx_json({"stateHandle": STATE_TOKEN, "remediation": {"value": [skip]}})
+            if request.url.path in ("/idp/idx/introspect", "/idp/idx/skip")
+            else None
+        )
+    )
+    error = rejection(run)
+
+    assert error.code == "unexpected_step"
+    assert len([r for r in idx_calls(fake.requests) if r.url.path == "/idp/idx/skip"]) == 8
+
+
+def test_names_unknown_remediation_forms_without_their_values() -> None:
+    fake, run = setup()
+    unknown = {
+        "name": "enroll-profile",
+        "href": "x",
+        "value": [{"name": "stateHandle", "value": STATE_TOKEN}],
+    }
+    fake.set_override(
+        lambda request: (
+            idx_json({"stateHandle": STATE_TOKEN, "remediation": {"value": [unknown]}})
+            if request.url.path == "/idp/idx/introspect"
+            else None
+        )
+    )
+    error = rejection(run)
+
+    assert error.code == "unexpected_step"
+    assert "enroll-profile" in str(error)
+    expect_no_secrets(error)
+
+
+def test_maps_http_failures_to_http_n_and_timeouts_to_network() -> None:
+    down, run_down = setup()
+    down.set_override(
+        lambda request: httpx.Response(503, text="busy") if request.url.host == OKTA else None
+    )
+    assert rejection(run_down).code == "http_503"
+
+    slow, run_slow = setup()
+
+    def time_out(request: RecordedRequest) -> httpx.Response | None:
+        if request.url.host == OKTA:
+            # httpx's message carries the full URL, query string included.
+            raise httpx.ReadTimeout(f"timed out reading {request.url}")
+        return None
+
+    slow.set_override(time_out)
+    error = rejection(run_slow)
+    assert error.code == "network"
+    assert "timed out" in str(error)
+    expect_no_secrets(error)
+
+
+def test_rejects_bad_input_before_any_request() -> None:
+    fake, run = setup()
+    with pytest.raises(ValueError):
+        run(url="http://learning.example.edu/")
+    with pytest.raises(ValueError):
+        run(totp_secret="not base32!")
+    assert fake.requests == []
