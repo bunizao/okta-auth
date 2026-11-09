@@ -62,8 +62,13 @@ export function readSamlForm(html: string, field: "SAMLResponse" | "SAMLRequest"
   const action = formTag ? readAttributes(formTag).action : undefined;
   if (!action) return undefined;
 
+  // Only the inputs inside that form: another form's RelayState must not ride
+  // along with this form's message.
+  const formEnd = html.indexOf("</form", message.index);
+  const end = formEnd < 0 ? html.length : formEnd;
   const fields: Record<string, string> = {};
-  for (const { attributes } of inputs) {
+  for (const { index, attributes } of inputs) {
+    if (index < formStart || index >= end) continue;
     if (attributes.name === field || attributes.name === "RelayState") {
       fields[attributes.name] = attributes.value ?? "";
     }

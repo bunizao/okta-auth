@@ -64,5 +64,18 @@ def test_read_saml_form_handles_attributes_in_any_order_and_single_quotes() -> N
     )
 
 
+def test_read_saml_form_reads_only_the_fields_of_the_form_that_carries_the_message() -> None:
+    html = (
+        '<input name="RelayState" value="outside">'
+        '<form action="https://sp.example/one"><input name="SAMLResponse" value="r1">'
+        '<input name="RelayState" value="s1"></form>'
+        '<form action="https://sp.example/two"><input name="SAMLResponse" value="r2">'
+        '<input name="RelayState" value="s2"></form>'
+    )
+    assert read_saml_form(html) == SamlForm(
+        action="https://sp.example/one", fields={"SAMLResponse": "r1", "RelayState": "s1"}
+    )
+
+
 def test_read_saml_form_returns_undefined_for_a_page_without_a_saml_response() -> None:
     assert read_saml_form('<form action="/x"><input name="username"></form>') is None

@@ -66,6 +66,17 @@ describe("readSamlForm", () => {
     expect(readSamlForm(html)).toEqual({ action: "https://sp.example/acs", fields: { SAMLResponse: "abc&d" } });
   });
 
+  it("reads only the fields of the form that carries the message", () => {
+    const html =
+      `<input name="RelayState" value="outside">` +
+      `<form action="https://sp.example/one"><input name="SAMLResponse" value="r1"><input name="RelayState" value="s1"></form>` +
+      `<form action="https://sp.example/two"><input name="SAMLResponse" value="r2"><input name="RelayState" value="s2"></form>`;
+    expect(readSamlForm(html)).toEqual({
+      action: "https://sp.example/one",
+      fields: { SAMLResponse: "r1", RelayState: "s1" },
+    });
+  });
+
   it("returns undefined for a page without a SAML response", () => {
     expect(readSamlForm(`<form action="/x"><input name="username"></form>`)).toBeUndefined();
   });

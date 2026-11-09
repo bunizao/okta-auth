@@ -86,8 +86,14 @@ def read_saml_form(html: str, field: str = "SAMLResponse") -> SamlForm | None:
     if not action:
         return None
 
+    # Only the inputs inside that form: another form's RelayState must not ride
+    # along with this form's message.
+    form_end = html.find("</form", message)
+    end = len(html) if form_end < 0 else form_end
     fields: dict[str, str] = {}
-    for _, attributes in inputs:
+    for index, attributes in inputs:
+        if index < form_start or index >= end:
+            continue
         name = attributes.get("name")
         if name == field or name == "RelayState":
             fields[name] = attributes.get("value", "")
