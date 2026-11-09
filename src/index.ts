@@ -1,4 +1,4 @@
-export { signIn, type SignInOptions, type SignInResult } from "./sign-in.js";
+export { signIn, type Progress, type SignInOptions, type SignInResult } from "./sign-in.js";
 export {
   signInGlobalProtect,
   type GlobalProtectInterface,

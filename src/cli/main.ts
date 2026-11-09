@@ -73,7 +73,12 @@ async function login(url: string, json: boolean, fromStdin: boolean): Promise<nu
   const credentials = await requireCredentials(fromStdin);
   if (!credentials) return 1;
 
-  const result = await signIn({ url, ...credentials, deviceToken: await readDeviceToken(url) });
+  const result = await signIn({
+    url,
+    ...credentials,
+    deviceToken: await readDeviceToken(url),
+    onProgress: showProgress,
+  });
   const file = await saveSession(url, result.cookies);
   await saveDeviceToken(url, result.deviceToken);
 
@@ -99,12 +104,19 @@ async function globalProtect(server: string | undefined, iface: string | undefin
     interface: iface as GlobalProtectInterface | undefined,
     ...credentials,
     deviceToken: await readDeviceToken(tokenKey),
+    onProgress: showProgress,
   });
   await saveDeviceToken(tokenKey, result.deviceToken);
 
   const { deviceToken: _, ...output } = result;
   console.log(JSON.stringify({ server, ...output }, null, 2));
   return 0;
+}
+
+// Sign-in takes a few round trips to Okta; say which one we're on. stderr, so
+// JSON output on stdout stays clean.
+function showProgress(message: string): void {
+  console.error(`okta-auth: ${message}...`);
 }
 
 async function requireCredentials(

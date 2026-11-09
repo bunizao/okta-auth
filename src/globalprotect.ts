@@ -1,7 +1,7 @@
 import { Client, type Fetch, type Page } from "./client.js";
 import { OktaSignInError, where } from "./errors.js";
 import { decodeEntities, readSamlForm } from "./html.js";
-import { deviceTokenOf, handOff, httpError } from "./sign-in.js";
+import { deviceTokenOf, handOff, httpError, type Progress } from "./sign-in.js";
 import { base32Decode } from "./totp.js";
 
 export type GlobalProtectInterface = "gateway" | "portal";
@@ -18,6 +18,8 @@ export interface GlobalProtectOptions {
   deviceToken?: string;
   fetch?: Fetch;
   now?: () => number;
+  // Called with a short message before each step; see SignInOptions.
+  onProgress?: Progress;
 }
 
 export interface GlobalProtectResult {
@@ -74,8 +76,10 @@ export async function signInGlobalProtect(options: GlobalProtectOptions): Promis
   const now = options.now ?? Date.now;
   const client = new Client(options.fetch ?? ((input, init) => fetch(input, init)), now, options.deviceToken);
 
-  const start = await prelogin(client, base, options.interface ? [options.interface] : ["gateway", "portal"]);
-  const acs = await handOff(client, await openOkta(client, start), options, now);
+  const progress = options.onProgress ?? (() => {});
+  const interfaces: GlobalProtectInterface[] = options.interface ? [options.interface] : ["gateway", "portal"];
+  const start = await prelogin(client, base, interfaces, progress);
+  const acs = await handOff(client, await openOkta(client, start), options, now, progress);
   const result = readResult(acs);
 
   return { interface: start.interface, ...result, deviceToken: deviceTokenOf(client, options.deviceToken) };
@@ -83,11 +87,17 @@ export async function signInGlobalProtect(options: GlobalProtectOptions): Promis
 
 // Asks each interface's prelogin in turn and returns the first SAML request.
 // Nothing reaches Okta until one offers SAML.
-async function prelogin(client: Client, base: URL, interfaces: GlobalProtectInterface[]): Promise<SamlStart> {
+async function prelogin(
+  client: Client,
+  base: URL,
+  interfaces: GlobalProtectInterface[],
+  progress: Progress,
+): Promise<SamlStart> {
   const asked: URL[] = [];
   for (const name of interfaces) {
     const url = new URL(PRELOGIN_PATHS[name], base);
     asked.push(url);
+    progress(`Asking the ${name} at ${base.hostname} for SAML sign-in`);
     const page = await client.follow(url, {
       method: "POST",
       headers: { "user-agent": "PAN GlobalProtect", "content-type": "application/x-www-form-urlencoded" },

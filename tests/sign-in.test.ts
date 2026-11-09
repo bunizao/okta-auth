@@ -383,4 +383,24 @@ describe("signIn", () => {
       expect((await rejection(run())).code).toBe("unexpected_step");
     }
   });
+
+  it("reports each step by host without secrets", async () => {
+    const steps: string[] = [];
+    const { run } = setup();
+    await run({ onProgress: (message) => steps.push(message) });
+
+    expect(steps).toEqual([
+      `Opening ${SP}`,
+      `Signing in at ${OKTA}`,
+      "Sending the username",
+      "Sending the password",
+      "Choosing the TOTP authenticator",
+      "Sending a TOTP code",
+      `Posting the SAML response to ${SP}`,
+      `Checking that ${SP} is signed in`,
+    ]);
+    for (const secret of [USERNAME, PASSWORD, TOTP_SECRET, STATE_TOKEN, "?"]) {
+      expect(steps.filter((step) => step.includes(secret))).toEqual([]);
+    }
+  });
 });

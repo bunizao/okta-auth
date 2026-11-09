@@ -156,4 +156,17 @@ describe("signInGlobalProtect", () => {
     }
     expect(fake.requests).toEqual([]);
   });
+
+  it("reports which interface it asks", async () => {
+    const steps: string[] = [];
+    const { run } = setup({ gpSaml: ["portal"], oktaSession: true });
+    await run({ onProgress: (message) => steps.push(message) });
+
+    expect(steps).toEqual([
+      `Asking the gateway at ${GP} for SAML sign-in`,
+      `Asking the portal at ${GP} for SAML sign-in`,
+      `${OKTA} already has a session`,
+      `Posting the SAML response to ${GP}`,
+    ]);
+  });
 });

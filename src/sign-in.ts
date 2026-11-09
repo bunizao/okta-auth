@@ -2,7 +2,7 @@ import { Client, type Fetch, type Page } from "./client.js";
 import type { Cookie } from "./cookies.js";
 import { OktaSignInError, where } from "./errors.js";
 import { isLoginPage, readSamlForm, readStateToken } from "./html.js";
-import { errorKeys, nextStep, type Credentials, type IdxState, type Sends } from "./idx.js";
+import { errorKeys, nextStep, type Credentials, type IdxState, type IdxStep, type Sends } from "./idx.js";
 import { base32Decode } from "./totp.js";
 
 export interface SignInOptions {
@@ -24,7 +24,13 @@ export interface SignInOptions {
   fetch?: Fetch;
   // Milliseconds since the epoch. Drives TOTP codes and cookie expiry.
   now?: () => number;
+  // Called with a short message before each step.
+  onProgress?: Progress;
 }
+
+// Reports what sign-in is doing, for people watching a terminal. Messages name
+// hosts and steps, never credentials, tokens or URLs with query strings.
+export type Progress = (message: string) => void;
 
 export interface SignInResult {
   // Cookies the target site set, and only those. For an Okta app link, the
@@ -55,7 +61,9 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
   const client = new Client(options.fetch ?? ((input, init) => fetch(input, init)), now, options.deviceToken);
   for (const cookie of options.oktaSession ?? []) client.jar.set(cookie);
 
-  const acs = await handOff(client, await client.follow(target), options, now);
+  const progress = options.onProgress ?? (() => {});
+  progress(`Opening ${target.hostname}`);
+  const acs = await handOff(client, await client.follow(target), options, now, progress);
   const signedIn = {
     deviceToken: deviceTokenOf(client, options.deviceToken),
     landingUrl: acs.url.href,
@@ -74,6 +82,7 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
     return { cookies: client.jar.list(acs.url.hostname), ...signedIn };
   }
 
+  progress(`Checking that ${target.hostname} is signed in`);
   // The target must finish with a successful response, without a login form.
   const check = await client.follow(target);
   if (check.url.hostname !== target.hostname || check.status < 200 || check.status >= 300 || isLoginPage(check.body)) {
@@ -100,23 +109,33 @@ function landedInApp(landing: Page, oktaHost: string): boolean {
 // Takes Okta's first page through sign-in (unless Okta already has a session and
 // answers with the SAML form) and posts the SAMLResponse to the service
 // provider's ACS. Returns the ACS's answer, redirects followed.
-export async function handOff(client: Client, page: Page, credentials: Credentials, now: () => number): Promise<Page> {
+export async function handOff(
+  client: Client,
+  page: Page,
+  credentials: Credentials,
+  now: () => number,
+  progress: Progress = () => {},
+): Promise<Page> {
   if (page.status >= 400) throw httpError(page.status, page.url);
 
   if (!readSamlForm(page.body)) {
     const stateToken = readStateToken(page.body, page.url);
     client.useIdp(page.url.hostname);
-    page = await authenticate(client, page.url.origin, stateToken, credentials, now);
+    progress(`Signing in at ${page.url.hostname}`);
+    page = await authenticate(client, page.url.origin, stateToken, credentials, now, progress);
   } else {
     // Okta already had a session and answered with the SAML form straight away.
     client.useIdp(page.url.hostname);
+    progress(`${page.url.hostname} already has a session`);
   }
 
   const form = readSamlForm(page.body);
   if (!form) {
     throw new OktaSignInError("unexpected_step", `Okta finished without a SAML form at ${where(page.url)}`);
   }
-  return client.follow(new URL(form.action, page.url), {
+  const acs = new URL(form.action, page.url);
+  progress(`Posting the SAML response to ${acs.hostname}`);
+  return client.follow(acs, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(form.fields),
@@ -137,6 +156,7 @@ async function authenticate(
   stateToken: string,
   credentials: Credentials,
   now: () => number,
+  progress: Progress,
 ): Promise<Page> {
   let state = await post(client, new URL("/idp/idx/introspect", origin), { stateToken }, undefined);
   for (let steps = 0; ; steps++) {
@@ -145,6 +165,7 @@ async function authenticate(
       throw new OktaSignInError("unexpected_step", `Okta still wants more after ${MAX_IDX_STEPS} steps`);
     }
     const step = await nextStep(state, credentials, now());
+    progress(describe(step));
     state = await post(client, oktaUrl(step.href, origin), step.body, step.sends);
   }
 }
@@ -185,6 +206,15 @@ async function post(client: Client, url: URL, body: object, sends: Sends): Promi
   }
   if (!ok) throw httpError(response.status, url, reason);
   throw new OktaSignInError("unexpected_step", `Okta reported an error at ${where(url)}${reason}`);
+}
+
+function describe(step: IdxStep): string {
+  if (step.form === "identify") return step.sends === "password" ? "Sending the username and password" : "Sending the username";
+  if (step.sends === "password") return "Sending the password";
+  if (step.sends === "passcode") return "Sending a TOTP code";
+  if (step.form === "select-authenticator-authenticate") return "Choosing the TOTP authenticator";
+  if (step.form === "authenticator-verification-data") return "Asking Okta Verify for a TOTP code";
+  return "Skipping an optional step";
 }
 
 // Credentials only ever go to the Okta host that served the sign-in page.
