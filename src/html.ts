@@ -10,7 +10,7 @@ export interface SamlForm {
 export function isLoginPage(html: string): boolean {
   const content = html
     .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+    .replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
   for (const match of content.matchAll(/<input\b[^>]*>/gi)) {
     const attributes = readAttributes(match[0]);
     const type = attributes.type?.toLowerCase();
