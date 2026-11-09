@@ -194,7 +194,6 @@ def test_rejects_malformed_base32_before_any_request() -> None:
 
 
 def test_reports_which_interface_it_asks() -> None:
-    # Python only for now: the TS CLI has no progress output yet.
     steps: list[str] = []
     _, run = setup(gp_saml=["portal"], okta_session=True)
     run(progress=steps.append)

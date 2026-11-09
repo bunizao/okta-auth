@@ -400,7 +400,6 @@ def test_keeps_request_urls_out_of_logs_even_at_debug(caplog: pytest.LogCaptureF
 
 
 def test_reports_each_step_by_host_without_secrets() -> None:
-    # Python only for now: the TS CLI has no progress output yet.
     steps: list[str] = []
     _, run = setup()
     run(progress=steps.append)
