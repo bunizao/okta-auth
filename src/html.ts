@@ -5,6 +5,27 @@ export interface SamlForm {
   fields: Record<string, string>;
 }
 
+// An HTTP 200 on the target host may still be a sign-in form. Ignore templates
+// and hidden fields so embedded login markup does not invalidate a session.
+export function isLoginPage(html: string): boolean {
+  const content = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "");
+  for (const match of content.matchAll(/<input\b[^>]*>/gi)) {
+    const attributes = readAttributes(match[0]);
+    const type = attributes.type?.toLowerCase();
+    const autocomplete = (attributes.autocomplete ?? "").toLowerCase().split(/\s+/);
+    if (type === "hidden" || "hidden" in attributes || "disabled" in attributes || autocomplete.includes("new-password")) {
+      continue;
+    }
+    if (type === "password" || attributes.name?.toLowerCase() === "username" ||
+        attributes.id?.toLowerCase() === "okta-signin-username" || autocomplete.includes("username")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // The Okta sign-in page embeds the IDX state token in a script, for example
 // `var stateToken = '02.id.abc\x2Ddef';`, with JavaScript string escapes.
 export function readStateToken(html: string, url: URL): string {
@@ -52,8 +73,8 @@ export function readSamlForm(html: string, field: "SAMLResponse" | "SAMLRequest"
 
 function readAttributes(tag: string): Record<string, string> {
   const attributes: Record<string, string> = {};
-  for (const match of tag.matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
-    attributes[match[1]!.toLowerCase()] = decodeEntities(match[2] ?? match[3] ?? "");
+  for (const match of tag.matchAll(/\s([\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+    attributes[match[1]!.toLowerCase()] = decodeEntities(match[2] ?? match[3] ?? match[4] ?? "");
   }
   return attributes;
 }

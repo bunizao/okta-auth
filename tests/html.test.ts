@@ -1,9 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { OktaSignInError } from "../src/errors.js";
-import { readSamlForm, readStateToken } from "../src/html.js";
+import { isLoginPage, readSamlForm, readStateToken } from "../src/html.js";
 import { SAML_RESPONSE, samlFormPage, SP } from "./fake-sso.js";
 
 const page = new URL("https://example.okta.com/app/x/y/sso/saml");
+
+describe("isLoginPage", () => {
+  it("recognises password and identifier-first login fields", () => {
+    for (const html of [
+      '<form><input name="username"><input type="password"></form>',
+      "<FORM><INPUT TYPE=PASSWORD></FORM>",
+      '<form><input type="email" autocomplete="username"></form>',
+      '<input id="okta-signin-username">',
+    ]) {
+      expect(isLoginPage(html)).toBe(true);
+    }
+  });
+
+  it("ignores hidden fields and login markup outside the page content", () => {
+    for (const html of [
+      "<p>You are logged in</p>",
+      '<!-- <input type="password"> --><script>const template = \'<input name="username">\';</script>',
+      '<style>/* <input type="password"> */</style>',
+      '<form><input name="username" type="hidden"></form>',
+      '<form><input type="password" autocomplete="new-password"></form>',
+      '<input data-name="username" name="search">',
+      '<input type="password" hidden>',
+      '<input name="username" disabled>',
+    ]) {
+      expect(isLoginPage(html)).toBe(false);
+    }
+  });
+});
 
 describe("readStateToken", () => {
   it("decodes JavaScript escapes", () => {

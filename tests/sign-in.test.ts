@@ -248,6 +248,27 @@ describe("signIn", () => {
     expect(fake.requests).toEqual([]);
   });
 
+  it("rejects malformed base32 before any request", async () => {
+    const { fake, run } = setup();
+    for (const totpSecret of ["A", "AAA", "AAAAAA", "MZ", "M=Y"]) {
+      await expect(run({ totpSecret })).rejects.toThrow(TypeError);
+    }
+    expect(fake.requests).toEqual([]);
+  });
+
+  it("rejects a same-host login page after the SAML post", async () => {
+    const { run } = setup({ spRejects: true, spLoginPage: true });
+    expect((await rejection(run())).code).toBe("handoff_failed");
+  });
+
+  it("rejects an unfinished redirect after the SAML post", async () => {
+    const { fake, run } = setup();
+    fake.setOverride((request) => request.url.href === TARGET && request.cookies.get("MoodleSession") === "authed"
+      ? new Response(null, { status: 302 })
+      : undefined);
+    expect((await rejection(run())).code).toBe("handoff_failed");
+  });
+
   it("preserves SAML posts across same-origin 307 and 308 redirects", async () => {
     for (const acsRedirect of [307, 308] as const) {
       const { fake, run } = setup({ acsRedirect });

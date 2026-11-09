@@ -148,4 +148,12 @@ describe("signInGlobalProtect", () => {
     await expect(run({ totpSecret: "not base32!" })).rejects.toThrow(TypeError);
     expect(fake.requests).toEqual([]);
   });
+
+  it("rejects malformed base32 before any request", async () => {
+    const { fake, run } = setup();
+    for (const totpSecret of ["A", "AAA", "AAAAAA", "MZ", "M=Y"]) {
+      await expect(run({ totpSecret })).rejects.toThrow(TypeError);
+    }
+    expect(fake.requests).toEqual([]);
+  });
 });

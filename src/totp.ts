@@ -28,8 +28,8 @@ export async function totp(secret: string, now: number = Date.now()): Promise<st
 
 // Accepts the forms authenticator apps show: any case, spaces, dashes, padding.
 export function base32Decode(secret: string): Uint8Array<ArrayBuffer> {
-  const clean = secret.replace(/[\s=-]/g, "").toUpperCase();
-  if (!clean || /[^A-Z2-7]/.test(clean)) {
+  const clean = secret.replace(/[\s-]/g, "").replace(/=+$/, "").toUpperCase();
+  if (!clean || /[^A-Z2-7]/.test(clean) || ![0, 2, 4, 5, 7].includes(clean.length % 8)) {
     // Deliberately says nothing about the value itself.
     throw new TypeError("TOTP secret is not valid base32");
   }
@@ -47,5 +47,7 @@ export function base32Decode(secret: string): Uint8Array<ArrayBuffer> {
       value &= (1 << bits) - 1;
     }
   }
+  // Unused bits in the final Base32 character must be zero.
+  if (value !== 0) throw new TypeError("TOTP secret is not valid base32");
   return out;
 }

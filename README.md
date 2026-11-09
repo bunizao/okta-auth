@@ -233,7 +233,9 @@ If you've lost the secret, remove the authenticator and enroll again.
    then Okta Verify's code. It never picks push, SMS or email.
 4. Follow Okta's success link to the auto-submitting SAML form.
 5. POST `SAMLResponse` and `RelayState` to the service provider's ACS, follow
-   the redirects, and check that the target URL no longer leads to Okta.
+   the redirects, and check that the target URL returns a 2xx response on its
+   own host without a login form. Same-origin 307/308 redirects preserve the
+   POST; forwarding that POST to another origin is refused.
 
 If Okta already has a session and answers step 1 with the SAML form, steps 2–4
 are skipped. Credentials only ever go to the Okta host that served the sign-in

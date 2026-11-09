@@ -45,6 +45,8 @@ export interface FakeOptions {
   spRejects?: boolean;
   // The ACS moved within the same origin and requires the original POST.
   acsRedirect?: 307 | 308;
+  // After an unsuccessful SAML post, the SP serves its own login form.
+  spLoginPage?: boolean;
   // How GlobalProtect prelogin hands over the SAMLRequest.
   gpBinding?: "REDIRECT" | "POST";
   // GlobalProtect interfaces whose prelogin offers SAML; the rest answer Error.
@@ -95,6 +97,7 @@ export function fakeSso(options: FakeOptions) {
   let appPath = APP_PATH;
   // The GlobalProtect interface whose prelogin started the sign-in.
   let gpInterface: GpInterface | undefined;
+  let samlPosted = false;
   // Lets a test replace any route.
   let override: ((request: RecordedRequest) => Response | undefined) | undefined;
 
@@ -119,6 +122,9 @@ export function fakeSso(options: FakeOptions) {
     const signedIn = cookies.get("MoodleSession") === "authed";
     if (method === "GET" && (url.pathname === "/login/index.php" || url.pathname === "/my/")) {
       if (signedIn) return html("<p>You are logged in</p>");
+      if (samlPosted && options.spLoginPage) {
+        return html('<form><input name="username"><input type="password"></form>');
+      }
       const location = `https://${OKTA}${APP_PATH}?SAMLRequest=request&RelayState=${encodeURIComponent(RELAY_STATE)}`;
       return redirect(location, [
         "MoodleSession=anon; Path=/; Secure; HttpOnly",
@@ -132,6 +138,7 @@ export function fakeSso(options: FakeOptions) {
       });
     }
     if (method === "POST" && (url.pathname === ACS_PATH || url.pathname === "/canonical-acs")) {
+      samlPosted = true;
       const form = new URLSearchParams(body);
       const accepted =
         !options.spRejects &&

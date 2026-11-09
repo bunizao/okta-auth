@@ -27,4 +27,10 @@ describe("totp", () => {
   it("rejects a malformed secret without echoing it", async () => {
     await expect(totp("not-base32!", 0)).rejects.toThrow(/^TOTP secret is not valid base32$/);
   });
+
+  it("rejects incomplete and noncanonical base32 without echoing it", async () => {
+    for (const secret of ["A", "AAA", "AAAAAA", "MZ", "M=Y", "MY=A", "===="]) {
+      await expect(totp(secret, 0)).rejects.toThrow(/^TOTP secret is not valid base32$/);
+    }
+  });
 });

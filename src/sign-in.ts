@@ -1,7 +1,7 @@
 import { Client, type Fetch, type Page } from "./client.js";
 import type { Cookie } from "./cookies.js";
 import { OktaSignInError, where } from "./errors.js";
-import { readSamlForm, readStateToken } from "./html.js";
+import { isLoginPage, readSamlForm, readStateToken } from "./html.js";
 import { errorKeys, nextStep, type Credentials, type IdxState, type Sends } from "./idx.js";
 import { base32Decode } from "./totp.js";
 
@@ -44,9 +44,9 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
 
   const acs = await handOff(client, await client.follow(target), options, now);
 
-  // Signed in means the page that sent us to Okta no longer does.
+  // The target must finish with a successful response, without a login form.
   const check = await client.follow(target);
-  if (check.url.hostname !== target.hostname || check.status >= 400) {
+  if (check.url.hostname !== target.hostname || check.status < 200 || check.status >= 300 || isLoginPage(check.body)) {
     throw new OktaSignInError(
       "handoff_failed",
       `${where(target)} is still not signed in after the SAML post ` +
