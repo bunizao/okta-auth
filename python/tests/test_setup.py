@@ -5,6 +5,8 @@ from __future__ import annotations
 import http.client
 import json
 import time
+from importlib import resources
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -198,3 +200,12 @@ def test_okta_export_prints_json_only_with_the_flag(home, monkeypatch, capsys) -
 
     assert cli.main(["export", "--dangerously-print-password-and-totp-secret"]) == 0
     assert json.loads(capsys.readouterr().out) == {"OKTA_USERNAME": "u", "OKTA_PASSWORD": "p"}
+
+
+TS_SETUP_PAGE = Path(__file__).resolve().parents[2] / "typescript" / "src" / "cli" / "setup.html"
+
+
+@pytest.mark.skipif(not TS_SETUP_PAGE.exists(), reason="outside the monorepo checkout")
+def test_serves_the_same_setup_page_as_the_typescript_cli() -> None:
+    page = (resources.files("okta_auth") / "setup.html").read_bytes()
+    assert page == TS_SETUP_PAGE.read_bytes()
