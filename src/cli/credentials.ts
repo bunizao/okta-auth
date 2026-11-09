@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { Progress } from "../index.js";
+import { readConfig, type EnvName } from "./config.js";
+import { isOpRef, OpError, readRefs, readTotpCode, runOp, totpSecretOf, type RunOp } from "./onepassword.js";
 
 // Same Keychain service and account names the Python version's keyring backend
 // wrote, so an existing `okta config` setup keeps working.
@@ -9,14 +12,73 @@ export interface StoredCredentials {
   username?: string;
   password?: string;
   totpSecret?: string;
+  // A 1Password reference to the TOTP field. Sign-in asks 1Password for the
+  // current code through it, so the secret itself stays in 1Password.
+  totpRef?: string;
 }
 
-// Environment first (works with `op run` and CI), then the macOS Keychain.
-export async function readCredentials(): Promise<StoredCredentials> {
+export interface ReadOptions {
+  // Read the TOTP secret itself, even from 1Password (for `export`).
+  totpSecret?: boolean;
+  onProgress?: Progress;
+  runOp?: RunOp;
+  env?: NodeJS.ProcessEnv;
+}
+
+const KEYCHAIN_ACCOUNTS: Record<EnvName, string> = {
+  OKTA_USERNAME: "username",
+  OKTA_PASSWORD: "password",
+  OKTA_TOTP_SECRET: "totp_secret",
+};
+
+// Each value comes from the environment first (works with `op run` and CI),
+// then from where `okta setup` put it: 1Password references or the Keychain.
+// Any value may be an op:// reference; all of them are read with one op call.
+export async function readCredentials(options: ReadOptions = {}): Promise<StoredCredentials> {
+  const env = options.env ?? process.env;
+  const progress = options.onProgress ?? (() => {});
+  const config = await readConfig();
+  const pick = async (name: EnvName) =>
+    env[name] || config.opRefs[name] || (config.provider === "keyring" ? await keychain(KEYCHAIN_ACCOUNTS[name]) : undefined);
+
+  const values = {
+    username: await pick("OKTA_USERNAME"),
+    password: await pick("OKTA_PASSWORD"),
+    totp: await pick("OKTA_TOTP_SECRET"),
+  };
+  // A TOTP reference is read now only when the secret itself is wanted.
+  const toRead = (Object.keys(values) as Array<keyof typeof values>).filter((key) => {
+    const value = values[key];
+    return value !== undefined && isOpRef(value) && (key !== "totp" || options.totpSecret);
+  });
+  if (toRead.length) {
+    const names = toRead.map((key) => (key === "totp" ? "TOTP secret" : key));
+    const what = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+    progress(`Reading the ${what} from 1Password (approve it there if asked)`);
+    try {
+      const read = await readRefs(toRead.map((key) => values[key]!), options.runOp ?? runOp);
+      toRead.forEach((key, index) => (values[key] = read[index]));
+    } catch (error) {
+      if (!(error instanceof OpError)) throw error;
+      progress(`Could not read the ${what} from 1Password: ${error.message}`);
+      for (const key of toRead) values[key] = undefined;
+    }
+  }
+
+  const totpRef = values.totp !== undefined && isOpRef(values.totp) ? values.totp : undefined;
   return {
-    username: process.env.OKTA_USERNAME || (await keychain("username")),
-    password: process.env.OKTA_PASSWORD || (await keychain("password")),
-    totpSecret: process.env.OKTA_TOTP_SECRET || (await keychain("totp_secret")),
+    username: values.username || undefined,
+    password: values.password || undefined,
+    totpSecret: values.totp && !totpRef ? totpSecretOf(values.totp) : undefined,
+    ...(totpRef && { totpRef }),
+  };
+}
+
+// The sign-in callback for a TOTP field in 1Password.
+export function totpFrom1Password(ref: string, progress: Progress, run: RunOp = runOp): () => Promise<string> {
+  return async () => {
+    progress("Asking 1Password for a TOTP code");
+    return readTotpCode(ref, Date.now, run);
   };
 }
 

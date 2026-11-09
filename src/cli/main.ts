@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
-import { readCredentials, readCredentialsFromStdin } from "./credentials.js";
+import { readCredentials, readCredentialsFromStdin, totpFrom1Password } from "./credentials.js";
 import {
   cookieHeader,
   deleteSessions,
@@ -129,18 +129,27 @@ function showProgress(message: string): void {
   console.error(`okta-auth: ${message}...`);
 }
 
-async function requireCredentials(
-  fromStdin: boolean,
-): Promise<{ username: string; password: string; totpSecret?: string } | undefined> {
-  const { username, password, totpSecret } = await (fromStdin ? readCredentialsFromStdin() : readCredentials());
-  if (username && password) return { username, password, totpSecret };
+interface SignInCredentials {
+  username: string;
+  password: string;
+  totpSecret?: string;
+  totpCode?: () => Promise<string>;
+}
+
+async function requireCredentials(fromStdin: boolean): Promise<SignInCredentials | undefined> {
+  const { username, password, totpSecret, totpRef } = await (fromStdin
+    ? readCredentialsFromStdin()
+    : readCredentials({ onProgress: showProgress }));
+  if (username && password) {
+    return { username, password, totpSecret, ...(totpRef && { totpCode: totpFrom1Password(totpRef, showProgress) }) };
+  }
   if (fromStdin) {
     console.error("okta-auth: the JSON on stdin has no username or password");
     return undefined;
   }
   console.error(
-    "okta-auth: no credentials. Set OKTA_USERNAME and OKTA_PASSWORD (and OKTA_TOTP_SECRET), " +
-      'or store them in the Keychain under service "okta-auth"; see `okta-auth --help`.',
+    "okta-auth: no credentials. Run `okta-auth setup`, or set OKTA_USERNAME and OKTA_PASSWORD " +
+      "(and OKTA_TOTP_SECRET); see `okta-auth --help`.",
   );
   return undefined;
 }

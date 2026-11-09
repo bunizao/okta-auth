@@ -17,7 +17,7 @@ export interface SavedSession extends Session {
   file: string;
 }
 
-function dataDir(): string {
+export function dataDir(): string {
   return process.env.OKTA_AUTH_HOME ?? join(homedir(), ".okta-auth");
 }
 
