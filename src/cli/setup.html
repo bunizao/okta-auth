@@ -67,7 +67,7 @@
         <strong>1Password</strong><span class="muted" id="op-note">okta-auth keeps references; 1Password keeps the secrets and hands out TOTP codes.</span>
       </button>
       <button class="choice" id="pick-kc" aria-pressed="false">
-        <strong>macOS Keychain</strong><span class="muted" id="kc-note">Stored under the service "okta-auth".</span>
+        <strong id="kc-name">macOS Keychain</strong><span class="muted" id="kc-note">Stored under the service "okta-auth".</span>
       </button>
     </div>
 
@@ -145,7 +145,9 @@
     $("use-cookies").textContent = state.cli + " cookies <url>";
     $("use-export").textContent = state.cli + " export --dangerously-print-password-and-totp-secret | npx wrangler secret bulk";
     if (!state.op) { $("pick-op").disabled = true; $("op-note").textContent = "Install the 1Password CLI (op) and turn on its app integration to use this."; }
-    if (!state.keychain) { $("pick-kc").disabled = true; $("kc-note").textContent = "Only on macOS. Set OKTA_USERNAME and OKTA_PASSWORD instead."; }
+    // state.keychain names the OS credential store, or is false when there is none.
+    if (state.keychain) { $("kc-name").textContent = state.keychain; $("kc-save").textContent = "Save to " + state.keychain; }
+    else { $("pick-kc").disabled = true; $("kc-note").textContent = "Not available here. Set OKTA_USERNAME and OKTA_PASSWORD instead."; }
   }
 
   $("pick-op").onclick = async () => {
@@ -193,7 +195,7 @@
 
   $("kc-save").onclick = () => save(() => api("keychain", {
     username: $("kc-user").value, password: $("kc-pass").value, totpSecret: $("kc-totp").value,
-  }), "the Keychain");
+  }), "the " + (state.keychain || "Keychain"));
 
   async function save(request, where) {
     const out = $("where-result");

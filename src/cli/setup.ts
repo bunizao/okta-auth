@@ -56,7 +56,7 @@ export async function startSetup(options: SetupOptions = {}): Promise<SetupServe
         () => true,
         () => false,
       );
-      return { cli: options.cli ?? "okta-auth", provider: config.provider, op, keychain: process.platform === "darwin" };
+      return { cli: options.cli ?? "okta-auth", provider: config.provider, op, keychain: process.platform === "darwin" && "macOS Keychain" };
     },
     "GET /api/op/items": async () => ({ items: rankOktaItems(await listLoginItems(run)) }),
     "POST /api/op/use": async (body) => {
