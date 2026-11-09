@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 from okta_auth.credential_store import StoredCredentials
@@ -27,8 +28,12 @@ def resolve_runtime_credentials(
     explicit_totp_secret: str | None = None,
     app_settings: AppSettings | None = None,
     stored_credentials: StoredCredentials | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[str | None, str | None, str | None, AppSettings]:
-    """Resolve runtime credentials from CLI args, env, 1Password refs, or keyring."""
+    """Resolve runtime credentials from CLI args, env, 1Password refs, or keyring.
+
+    `op read` can wait for approval in the 1Password app; `progress` hears about
+    each read before it starts and about each one that fails."""
     current_settings = app_settings or load_settings()
     current_credentials = stored_credentials
     if current_credentials is None:
@@ -45,6 +50,8 @@ def resolve_runtime_credentials(
         op_reference_values.get("OKTA_USERNAME"),
         current_credentials.username,
         op_cache=op_cache,
+        label="username",
+        progress=progress,
     )
     password = _resolve_value(
         explicit_password,
@@ -52,6 +59,8 @@ def resolve_runtime_credentials(
         op_reference_values.get("OKTA_PASSWORD"),
         current_credentials.password,
         op_cache=op_cache,
+        label="password",
+        progress=progress,
     )
     totp_secret = _resolve_value(
         explicit_totp_secret,
@@ -59,6 +68,8 @@ def resolve_runtime_credentials(
         op_reference_values.get("OKTA_TOTP_SECRET"),
         current_credentials.totp_secret,
         op_cache=op_cache,
+        label="TOTP secret",
+        progress=progress,
     )
 
     return username, password, totp_secret, current_settings
@@ -67,30 +78,41 @@ def resolve_runtime_credentials(
 def _resolve_value(
     *candidates: str | None,
     op_cache: dict[str, str | None],
+    label: str = "value",
+    progress: Callable[[str], None] | None = None,
 ) -> str | None:
     for candidate in candidates:
         if not candidate:
             continue
-        return _maybe_resolve_op_reference(candidate, op_cache)
+        return _maybe_resolve_op_reference(candidate, op_cache, label, progress)
     return None
 
 
 def _maybe_resolve_op_reference(
     value: str,
     op_cache: dict[str, str | None],
+    label: str = "value",
+    progress: Callable[[str], None] | None = None,
 ) -> str | None:
     if not value.startswith(_OP_REFERENCE_PREFIX):
         return value
 
     if value not in op_cache:
-        op_cache[value] = _read_op_reference(value)
+        if progress:
+            progress(f"Reading the {label} from 1Password (approve it there if asked)")
+        resolved, failure = _read_op_reference(value)
+        if failure and progress:
+            progress(f"Could not read the {label} from 1Password: {failure}")
+        op_cache[value] = resolved
     return op_cache[value]
 
 
-def _read_op_reference(reference: str) -> str | None:
+def _read_op_reference(reference: str) -> tuple[str | None, str | None]:
+    """The referenced value, or None and why not. The reason never includes op's
+    output: it can echo the reference or the value."""
     op_path = shutil.which("op")
     if not op_path:
-        return None
+        return None, "the op command is not installed"
 
     try:
         result = subprocess.run(
@@ -100,10 +122,14 @@ def _read_op_reference(reference: str) -> str | None:
             text=True,
             timeout=_OP_READ_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired:
+        return None, f"op read timed out after {_OP_READ_TIMEOUT_SECONDS}s"
+    except subprocess.CalledProcessError as error:
+        return None, f"op read exited with status {error.returncode}"
+    except OSError:
+        return None, "op could not be started"
 
-    return _trim_trailing_newline(result.stdout)
+    return _trim_trailing_newline(result.stdout), None
 
 
 def _load_op_reference_values(app_settings: AppSettings) -> dict[str, str]:

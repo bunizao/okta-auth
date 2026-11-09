@@ -303,6 +303,7 @@ def _resolve_credentials(
         explicit_totp_secret=args.totp_secret,
         app_settings=stored_settings,
         stored_credentials=stored_credentials,
+        progress=_show_progress,
     )
     username = _require_value(username, "Username", secret=False)
     password = _require_value(password, "Password", secret=True)

@@ -440,3 +440,41 @@ def test_okta_check_json(monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["valid"] is True
     assert payload["domain_key"] == "portal.example.com"
+
+
+def test_okta_says_when_it_waits_on_1password_and_why_a_read_failed(monkeypatch, capsys) -> None:
+    async def fake_perform_login(**kwargs):
+        assert kwargs["totp_secret"] is None
+        return {
+            "success": True,
+            "domain_key": "portal.example.com",
+            "message": "Session saved for portal.example.com",
+            "url": "https://portal.example.com",
+        }
+
+    monkeypatch.setattr(cli, "perform_login", fake_perform_login)
+    monkeypatch.setattr(
+        cli,
+        "load_settings",
+        lambda: AppSettings(default_url="https://portal.example.com", credential_provider="op"),
+    )
+    monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: None)
+    monkeypatch.setenv("OKTA_USERNAME", "op://Private/Okta/username")
+    monkeypatch.setenv("OKTA_PASSWORD", "op://Private/Okta/password")
+    monkeypatch.setenv("OKTA_TOTP_SECRET", "op://Private/Okta/totp_secret")
+    monkeypatch.setattr(runtime_credentials.shutil, "which", lambda command: "/usr/local/bin/op")
+
+    def fake_run(cmd, **kwargs):
+        if cmd[2].endswith("totp_secret"):
+            raise subprocess.CalledProcessError(1, cmd, output="", stderr="op: dismissed")
+        return subprocess.CompletedProcess(cmd, 0, stdout="resolved-secret\n", stderr="")
+
+    monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)
+
+    assert cli.main([]) == 0
+    errors = capsys.readouterr().err
+    for label in ["username", "password", "TOTP secret"]:
+        assert f"okta: Reading the {label} from 1Password" in errors
+    assert "Could not read the TOTP secret from 1Password: op read exited with status 1" in errors
+    assert "resolved-secret" not in errors
+    assert "dismissed" not in errors
