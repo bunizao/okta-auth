@@ -61,6 +61,7 @@ async def perform_login(
         "domain_key": domain_key,
         "message": f"Session saved for {domain_key}",
         "url": url,
+        "cookie_count": len(result.cookies),
     }
 
 

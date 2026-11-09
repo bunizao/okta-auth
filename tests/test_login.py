@@ -30,6 +30,7 @@ def test_perform_login_saves_only_the_target_cookies_and_the_device_token(store)
         "domain_key": SP,
         "message": f"Session saved for {SP}",
         "url": TARGET,
+        "cookie_count": 2,
     }
     session_file = store / "sessions" / f"{SP}.json"
     saved = json.loads(session_file.read_text())

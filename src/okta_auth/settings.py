@@ -32,13 +32,13 @@ class AppSettings:
 def load_settings() -> AppSettings:
     """Load settings from disk. Invalid files are ignored."""
     if not CONFIG_PATH.exists():
-        return AppSettings()
+        return AppSettings(op_env_file=str(DEFAULT_OP_ENV_PATH))
 
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as file:
             data = json.load(file)
     except (OSError, json.JSONDecodeError):
-        return AppSettings()
+        return AppSettings(op_env_file=str(DEFAULT_OP_ENV_PATH))
 
     default_url = data.get("default_url")
     if isinstance(default_url, str):
@@ -70,15 +70,7 @@ def load_settings() -> AppSettings:
 
 def save_settings(settings: AppSettings) -> Path:
     """Persist non-secret settings under ~/.okta-auth."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_PATH, "w", encoding="utf-8") as file:
-        json.dump(asdict(settings), file, indent=2)
-
-    try:
-        os.chmod(CONFIG_PATH, 0o600)
-    except OSError:
-        pass
-
+    _write_private(CONFIG_PATH, json.dumps(asdict(settings), indent=2) + "\n")
     return CONFIG_PATH
 
 
@@ -139,6 +131,38 @@ def write_op_env_file(app_settings: AppSettings) -> Path:
         pass
 
     return env_path
+
+
+def save_op_refs(username: str, password: str, totp: str | None) -> Path:
+    """Point the CLI at 1Password references by ID, as `okta setup` finds them.
+    The references replace any vault and item names from an older setup."""
+    current = load_settings()
+    env_path = _op_env_path(current)
+    lines = [f"OKTA_USERNAME={username}", f"OKTA_PASSWORD={password}"]
+    if totp:
+        lines.append(f"OKTA_TOTP_SECRET={totp}")
+    _write_private(env_path, "\n".join(lines) + "\n")
+    current.credential_provider = "op"
+    current.op_vault = None
+    current.op_item = None
+    current.op_env_file = str(env_path)
+    save_settings(current)
+    return env_path
+
+
+def save_provider(provider: str) -> Path:
+    """Switch the credential provider and keep every other setting."""
+    current = load_settings()
+    current.credential_provider = provider
+    return save_settings(current)
+
+
+def _write_private(path: Path, text: str) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(text)
+    os.chmod(path, 0o600)
 
 
 def clear_op_env_file(app_settings: AppSettings | None = None) -> None:

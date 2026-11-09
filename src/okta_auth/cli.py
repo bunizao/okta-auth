@@ -21,6 +21,7 @@ from okta_auth.credential_store import (
     get_store_status,
 )
 from okta_auth.credential_store import load_credentials as load_stored_credentials
+from okta_auth.export import EXPORT_FLAG, export_json, export_refusal
 from okta_auth.runtime_credentials import resolve_credentials
 from okta_auth.settings import (
     AppSettings,
@@ -30,8 +31,19 @@ from okta_auth.settings import (
     load_settings,
     uses_keyring,
 )
+from okta_auth.setup_server import open_browser, start_setup
 
-COMMANDS = {"login", "check", "list", "delete", "cookies", "globalprotect", "config"}
+COMMANDS = {
+    "login",
+    "check",
+    "list",
+    "delete",
+    "cookies",
+    "globalprotect",
+    "config",
+    "setup",
+    "export",
+}
 
 # Okta rejected the username or password (EX_NOPERM). A supervising script should
 # stop rather than retry: repeated attempts lock the account.
@@ -107,6 +119,22 @@ def build_parser() -> argparse.ArgumentParser:
     config_parser.add_argument("--yes", action="store_true", help="Skip the reset confirmation.")
     config_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
 
+    subparsers.add_parser(
+        "setup",
+        help="Choose where your Okta credentials live and try a sign-in, in the browser.",
+    )
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Print the password and TOTP secret as JSON, for a program that signs in itself.",
+    )
+    export_parser.add_argument(
+        f"--{EXPORT_FLAG}",
+        dest="confirmed",
+        action="store_true",
+        help="Required: says you mean to hand the raw secrets to another program.",
+    )
+
     return parser
 
 
@@ -140,6 +168,10 @@ async def run_cli(args: argparse.Namespace) -> int:
         return await _run_globalprotect(args)
     if args.command == "config":
         return _run_config(args)
+    if args.command == "setup":
+        return await _run_setup()
+    if args.command == "export":
+        return _run_export(args)
     raise AssertionError(f"Unsupported command: {args.command}")
 
 
@@ -292,6 +324,43 @@ def _run_config(args: argparse.Namespace) -> int:
         print(json.dumps({"error": "--json is only supported with --show or --reset"}, indent=2))
         return 1
     return ConfigWizard(provider=args.provider).run()
+
+
+async def _run_setup() -> int:
+    server = start_setup()
+    print(
+        f"okta: setup is open in your browser. If it isn't, visit:\n  {server.url}",
+        file=sys.stderr,
+    )
+    open_browser(server.url)
+    try:
+        await asyncio.to_thread(server.done.wait)
+    finally:
+        server.close()
+    print("okta: setup finished", file=sys.stderr)
+    return 0
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    refusal = export_refusal(args.confirmed, sys.stdout.isatty())
+    if refusal:
+        print(f"okta: {refusal}", file=sys.stderr)
+        return 1
+    stored_settings = load_settings()
+    credentials = resolve_credentials(
+        app_settings=stored_settings,
+        stored_credentials=(
+            load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
+        ),
+        progress=_show_progress,
+        read_totp_secret=True,
+    )
+    output = export_json(credentials)
+    if output is None:
+        print("okta: no username or password to export. Run `okta setup` first.", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
 
 
 def _resolve_credentials(

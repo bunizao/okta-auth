@@ -47,19 +47,19 @@ pip install okta-auth-cli
 
 ### 1. Configure credentials
 
-Run the built-in wizard:
+Open the setup page:
 
 ```bash
-okta config
+okta setup
 ```
 
-If the wizard asks for a TOTP secret and you are not sure where to find it, see
-[TOTP Secret](#totp-secret).
+It opens a page on `127.0.0.1` in your browser, lists your 1Password logins with
+the Okta ones first (or takes your credentials for the OS keyring), and tries one
+sign-in so you know it works. The TypeScript `okta-auth setup` serves the same
+page, and both CLIs read what it saves.
 
-The wizard supports two providers:
-
-- `keyring`: store credentials in the OS credential manager
-- `op`: generate `~/.okta-auth/op.env` with `op://...` references for `op run`
+`okta config` is the same choice as a terminal wizard. If it asks for a TOTP
+secret and you are not sure where to find it, see [TOTP Secret](#totp-secret).
 
 Only non-secret settings such as the default URL and provider metadata are stored
 in `~/.okta-auth/config.json`.
@@ -111,7 +111,10 @@ Credential resolution order is:
 
 1. Explicit CLI or MCP arguments
 2. Environment variables
-3. Stored keyring credentials when the selected provider is `keyring`
+3. `op://` references in `~/.okta-auth/op.env` when the selected provider is `op`
+4. Stored keyring credentials when the selected provider is `keyring`
+
+Any of these values may itself be an `op://` reference.
 
 ### Recommended: OS keyring
 
@@ -136,30 +139,21 @@ If no secure backend is available, the wizard refuses to fall back to plaintext.
 
 ### 1Password CLI
 
-If you already manage secrets in 1Password:
+If you already manage secrets in 1Password, pick the login in `okta setup` (or
+run `okta config --provider op`). Only references are written, to
+`~/.okta-auth/op.env`; `okta setup` refers to the item and its fields by ID, so
+renaming them doesn't break anything.
 
-```bash
-okta config --provider op
-```
+The CLI and MCP server read those references themselves, no `op run` needed: the
+username and password with one `op inject` per sign-in, which 1Password may ask
+you to approve. If the login has a one-time password field, sign-in asks
+1Password for the current code (`?attribute=otp`), so the TOTP secret never
+leaves 1Password. 1Password's browser extension can scan Okta's enrollment QR
+code straight into that field.
 
-What gets stored:
-
-- `vault`, `item`, field names, `default_url`: `~/.okta-auth/config.json`
-- `OKTA_USERNAME`, `OKTA_PASSWORD`, optional `OKTA_TOTP_SECRET` references:
-  `~/.okta-auth/op.env`
-
-The generated env file contains `op://...` references, not plaintext values.
-
-Launch the CLI or MCP server through `op run`:
-
-```bash
-op run --env-file=$HOME/.okta-auth/op.env -- okta
-op run --env-file=$HOME/.okta-auth/op.env -- uvx --from okta-auth-cli okta-auth
-```
-
-1Password vault, item, and field names must be compatible with secret reference
-paths. If a name contains unsupported separators such as `/`, use the object's
-unique ID instead.
+Vault, item, and field names typed into `okta config` must be compatible with
+secret reference paths. If a name contains unsupported separators such as `/`,
+use the object's unique ID instead.
 
 ### Environment variables
 
@@ -174,7 +168,9 @@ export OKTA_TOTP_SECRET="JBSWY3DPEHPK3PXP"
 
 ### Manual 1Password setup
 
-If you do not want to use the wizard, you can set up `op run` manually.
+Without the wizard, put the references in the environment (or in an env file
+for `op run`); environment values that are `op://` references are read the same
+way.
 
 1. Create a login item:
 
@@ -193,18 +189,35 @@ OKTA_PASSWORD=op://Personal/Okta MCP/password
 OKTA_TOTP_SECRET=op://Personal/Okta MCP/totp_secret
 ```
 
-3. Launch through `op run`:
+3. Export them, or launch through `op run`:
 
 ```bash
 op run --env-file=$HOME/.okta-auth/op.env -- uvx --from okta-auth-cli okta-auth
 ```
+
+### Programs that sign in by themselves
+
+A Worker that keeps an app signed in on its own (an OnTrack or Moodle MCP) needs
+the password and TOTP secret themselves, not a session:
+
+```bash
+okta export --dangerously-print-password-and-totp-secret | npx wrangler secret bulk
+```
+
+It prints `{"OKTA_USERNAME", "OKTA_PASSWORD", "OKTA_TOTP_SECRET"}` and refuses to
+print to a terminal. Anything that holds both factors is as safe as its own
+account: put a passkey or hardware key on that Cloudflare account first. Programs
+on this machine should use `okta cookies <url> --json` instead.
 
 ## CLI
 
 ### Common commands
 
 - `okta [url]`: log in and save a session
+- `okta setup`: choose where credentials live and try a sign-in, in the browser
 - `okta config`: open the credential wizard
+- `okta export --dangerously-print-password-and-totp-secret`: print the
+  credentials as JSON for a program that signs in by itself
 - `okta config --provider keyring`: force keyring configuration
 - `okta config --provider op`: force 1Password configuration
 - `okta config --show`: show current config status
