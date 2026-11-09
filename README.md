@@ -45,6 +45,7 @@ interface SignInOptions {
   username: string;
   password: string;
   totpSecret?: string;      // base32, as shown when enrolling Google Authenticator
+  totpCode?: () => Promise<string>; // current code from a password manager; wins over totpSecret
   deviceToken?: string;     // from a previous SignInResult
   oktaSession?: Cookie[];   // from a previous SignInResult; skips MFA while it lasts
   fetch?: (input: string, init: RequestInit) => Promise<Response>;

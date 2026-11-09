@@ -15,6 +15,10 @@ export interface SignInOptions {
   password: string;
   // Base32 secret of a Google Authenticator (or Okta Verify TOTP) enrollment.
   totpSecret?: string;
+  // Returns the current TOTP code, called only when Okta asks for one. Use it
+  // instead of totpSecret when a password manager holds the secret and hands
+  // out codes (1Password: `op read "op://…?attribute=otp"`). Wins over totpSecret.
+  totpCode?: () => Promise<string>;
   // The `deviceToken` from an earlier sign-in. Okta keys "new device" checks
   // and sign-on emails to it.
   deviceToken?: string;

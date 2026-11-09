@@ -32,6 +32,7 @@ export interface Credentials {
   username: string;
   password: string;
   totpSecret?: string;
+  totpCode?: () => Promise<string>;
 }
 
 // What a step sends decides how a rejection is reported.
@@ -87,7 +88,7 @@ export async function nextStep(state: IdxState, credentials: Credentials, now: n
     choice !== undefined && choice.key !== PASSWORD && rank(choice.key) < rank(challengeKey);
   if (challenge && canAnswer(challengeKey, credentials) && !switchToChoice) {
     const isPassword = challengeKey === PASSWORD;
-    const secret = isPassword ? credentials.password : await totp(credentials.totpSecret!, now);
+    const secret = isPassword ? credentials.password : await totpCode(credentials, now);
     const credentialsField = field(challenge, "credentials");
     return {
       form: challenge.name,
@@ -105,7 +106,7 @@ export async function nextStep(state: IdxState, credentials: Credentials, now: n
       throw new OktaSignInError(
         "mfa_unsupported",
         `Okta offers ${describe(options)}; this package answers ${PREFERRED_KEYS.join(", ")} (TOTP only)` +
-          (credentials.totpSecret ? "" : ", and no TOTP secret was given"),
+          (hasTotp(credentials) ? "" : ", and no TOTP secret was given"),
       );
     }
     return {
@@ -196,7 +197,17 @@ function authenticatorOptions(state: IdxState, form: IdxForm): AuthenticatorOpti
 
 function canAnswer(key: string | undefined, credentials: Credentials): boolean {
   if (key === PASSWORD) return true;
-  return key !== undefined && TOTP_KEYS.has(key) && credentials.totpSecret !== undefined;
+  return key !== undefined && TOTP_KEYS.has(key) && hasTotp(credentials);
+}
+
+function hasTotp(credentials: Credentials): boolean {
+  return credentials.totpCode !== undefined || credentials.totpSecret !== undefined;
+}
+
+// A caller's code source (a password manager) wins over computing one locally.
+async function totpCode(credentials: Credentials, now: number): Promise<string> {
+  if (credentials.totpCode) return credentials.totpCode();
+  return totp(credentials.totpSecret!, now);
 }
 
 function rank(key: string | undefined): number {

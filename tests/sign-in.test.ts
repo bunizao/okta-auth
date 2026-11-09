@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OktaSignInError, signIn, type SignInOptions } from "../src/index.js";
+import { OktaSignInError, signIn, totp, type SignInOptions } from "../src/index.js";
 import {
   fakeSso,
   OKTA,
@@ -119,6 +119,30 @@ describe("signIn", () => {
     await run();
 
     expect(idxCalls(fake.requests).some((request) => request.url.pathname === "/idp/idx/challenge")).toBe(false);
+  });
+
+  it("answers TOTP with a code from totpCode instead of the secret", async () => {
+    const asked: number[] = [];
+    const { fake, run } = setup();
+    const result = await run({
+      totpSecret: undefined,
+      totpCode: async () => {
+        asked.push(now());
+        return totp(TOTP_SECRET, now());
+      },
+    });
+
+    expect(asked).toHaveLength(1);
+    expect(result.cookies.find((cookie) => cookie.name === "MoodleSession")?.value).toBe("authed");
+    expect(fake.requests.some((request) => request.body.includes(TOTP_SECRET))).toBe(false);
+  });
+
+  it("never asks totpCode when Okta already has a session", async () => {
+    let asked = 0;
+    const { run } = setup({ oktaSession: true });
+    await run({ totpCode: async () => String(++asked) });
+
+    expect(asked).toBe(0);
   });
 
   it("round-trips the device token so Okta sees the same device", async () => {
