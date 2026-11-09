@@ -25,6 +25,7 @@ def test_ignores_hidden_fields_and_login_markup_outside_the_page_content() -> No
         "<p>You are logged in</p>",
         '<!-- <input type="password"> --><script>const template = \'<input name="username">\';</script>',
         '<style>/* <input type="password"> */</style>',
+        '<template><input type="password"></template>',
         '<form><input name="username" type="hidden"></form>',
         '<form><input type="password" autocomplete="new-password"></form>',
         '<input data-name="username" name="search">',

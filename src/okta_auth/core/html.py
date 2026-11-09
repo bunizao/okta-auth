@@ -27,7 +27,9 @@ def is_login_page(html: str) -> bool:
     """An HTTP 200 on the target host may still be a sign-in form. Ignore templates
     and hidden fields so embedded login markup does not invalidate a session."""
     content = re.sub(r"<!--[\s\S]*?-->", "", html)
-    content = re.sub(r"<(script|style)\b[^>]*>[\s\S]*?</\1\s*>", "", content, flags=re.IGNORECASE)
+    content = re.sub(
+        r"<(script|style|template)\b[^>]*>[\s\S]*?</\1\s*>", "", content, flags=re.IGNORECASE
+    )
     for match in _INPUT.finditer(content):
         attributes = _read_attributes(match.group(0))
         input_type = attributes.get("type", "").lower()
