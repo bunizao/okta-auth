@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  cookieHeader,
   deleteSessions,
   listSessions,
   readDeviceToken,
@@ -30,6 +31,21 @@ beforeEach(async () => {
 });
 
 describe("session store", () => {
+  it("exports only path-matching cookies from legacy sessions", async () => {
+    const url = "https://learning.example.edu/app/page";
+    await saveSession(url, [
+      { ...cookie("session", ".learning.example.edu", -1), value: "root" },
+      { ...cookie("session"), value: "app", path: "/app" },
+      { ...cookie("other"), path: "/other" },
+    ]);
+    const session = (await readSession(url))!;
+
+    expect(cookieHeader(url, session.cookies)).toBe("session=app; session=root");
+    expect(cookieHeader("https://learning.example.edu/", session.cookies)).toBe("session=root");
+    // JSON export retains the complete live cookie list for cookie-aware clients.
+    expect(session.cookies).toHaveLength(3);
+  });
+
   it("saves sessions readable only by the user", async () => {
     const file = await saveSession(URL_A, [cookie("MoodleSession")]);
 

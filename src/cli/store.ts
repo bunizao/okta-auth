@@ -1,6 +1,7 @@
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CookieJar } from "../cookies.js";
 import type { Cookie } from "../index.js";
 
 // Session files are JSON cookie jars, one per target host, readable only by the
@@ -38,6 +39,20 @@ export async function saveSession(url: string, cookies: Cookie[]): Promise<strin
 
 export async function readSession(url: string): Promise<SavedSession | undefined> {
   return readSessionFile(sessionFile(url), new URL(url).host);
+}
+
+export function cookieHeader(url: string, cookies: Cookie[]): string | undefined {
+  const jar = new CookieJar(Date.now);
+  for (const cookie of cookies) {
+    jar.set({
+      ...cookie,
+      domain: cookie.domain.replace(/^\./, ""),
+      path: cookie.path || "/",
+      // Legacy Playwright files use -1 for session cookies.
+      expires: cookie.expires !== undefined && cookie.expires > 0 ? cookie.expires : undefined,
+    });
+  }
+  return jar.header(new URL(url));
 }
 
 export async function listSessions(): Promise<SavedSession[]> {

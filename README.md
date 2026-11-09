@@ -163,7 +163,8 @@ okta-auth logout                                 # or: okta-auth logout <url>
 device token. The cookie is printed because OpenConnect needs it; don't log it.
 
 Add `--json` to any command for machine-readable output. `cookies --json`
-prints the full cookie list.
+prints the full cookie list. The plain `cookies` output includes only cookies
+whose paths match the requested URL, with more specific paths first.
 
 `login` saves the target's cookies to `~/.okta-auth/sessions/<host>.json`
 (mode 0600) and the device token to `~/.okta-auth/device-tokens.json`.

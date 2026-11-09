@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
 import { readCredentials, readCredentialsFromStdin } from "./credentials.js";
-import { deleteSessions, listSessions, readDeviceToken, readSession, saveDeviceToken, saveSession } from "./store.js";
+import { cookieHeader, deleteSessions, listSessions, readDeviceToken, readSession, saveDeviceToken, saveSession } from "./store.js";
 
 const USAGE = `Usage: okta-auth <command> [--json]
 
@@ -141,12 +141,13 @@ async function status(json: boolean): Promise<number> {
 
 async function cookies(url: string, json: boolean): Promise<number> {
   const session = await readSession(url);
-  if (!session?.cookies.length) {
+  const header = session ? cookieHeader(url, session.cookies) : undefined;
+  if (!session?.cookies.length || (!json && !header)) {
     console.error(`okta-auth: no saved cookies for ${new URL(url).host}. Run: okta-auth login ${url}`);
     return 1;
   }
   if (json) console.log(JSON.stringify(session.cookies, null, 2));
-  else console.log(session.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "));
+  else console.log(header);
   return 0;
 }
 
