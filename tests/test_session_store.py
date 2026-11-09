@@ -1,7 +1,9 @@
 import json
+import stat
 from pathlib import Path
 
 from okta_auth.auth import session_store
+from okta_auth.core import Cookie
 
 
 def _write_storage_state(
@@ -17,11 +19,10 @@ def _write_storage_state(
 def test_save_get_list_delete_session(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
 
-    source = tmp_path / "state.json"
-    _write_storage_state(source, cookies=[{"name": "sid", "value": "abc"}])
-
     url = "https://portal.example.com/student"
-    key = session_store.save_session(url, str(source))
+    key = session_store.save_session(
+        url, [Cookie(name="sid", value="abc", domain="portal.example.com")]
+    )
 
     stored_path = session_store.get_session_path(url)
     assert stored_path is not None
@@ -101,3 +102,48 @@ def test_list_sessions_backfills_missing_counts_from_storage_state(tmp_path, mon
     assert len(sessions) == 1
     assert sessions[0]["cookie_count"] == 2
     assert sessions[0]["origin_count"] == 1
+
+
+def test_saves_sessions_readable_only_by_the_user(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
+
+    session_store.save_session("https://portal.example.com/", [])
+
+    for path in [
+        session_store.SESSIONS_DIR / "portal.example.com.json",
+        session_store.SESSIONS_DIR / "portal.example.com.meta.json",
+    ]:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(session_store.SESSIONS_DIR.stat().st_mode) == 0o700
+
+
+def test_load_cookies_keeps_only_live_target_cookies(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    session_store.ensure_sessions_dir()
+    _write_storage_state(
+        session_store.SESSIONS_DIR / "portal.example.com.json",
+        cookies=[
+            {"name": "session", "value": "a", "domain": "portal.example.com", "expires": -1},
+            {"name": "old", "value": "b", "domain": "portal.example.com", "expires": 1},
+            {"name": "DT", "value": "c", "domain": "example.okta.com", "expires": -1},
+        ],
+    )
+
+    cookies = session_store.load_cookies("https://portal.example.com/student")
+
+    assert [(c.name, c.domain, c.expires) for c in cookies] == [
+        ("session", "portal.example.com", None)
+    ]
+
+
+def test_deleting_a_session_keeps_the_device_token(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    url = "https://portal.example.com/student"
+    session_store.save_session(url, [])
+    session_store.save_device_token(url, "dt-1")
+
+    assert session_store.delete_session(url)
+    assert session_store.read_device_token(url) == "dt-1"
+    assert json.loads((tmp_path / "device-tokens.json").read_text()) == {
+        "portal.example.com": "dt-1"
+    }

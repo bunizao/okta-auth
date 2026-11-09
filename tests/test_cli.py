@@ -2,7 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from okta_auth import cli, runtime_credentials
+from okta_auth import GlobalProtectResult, cli, runtime_credentials
 from okta_auth.credential_store import CredentialStoreError, StoredCredentials
 from okta_auth.settings import AppSettings
 
@@ -13,7 +13,6 @@ def test_okta_defaults_to_login(monkeypatch, capsys) -> None:
         assert kwargs["username"] == "user@example.com"
         assert kwargs["password"] == "secret"
         assert kwargs["totp_secret"] is None
-        assert kwargs["headed"] is False
         return {
             "success": True,
             "domain_key": "portal.example.com",
@@ -44,9 +43,9 @@ def test_okta_defaults_to_login(monkeypatch, capsys) -> None:
     assert "Session file: /tmp/session.json" in output
 
 
-def test_okta_login_can_enable_headed_mode(monkeypatch) -> None:
+def test_okta_login_ignores_browser_options_from_before_0_3(monkeypatch, capsys) -> None:
     async def fake_perform_login(**kwargs):
-        assert kwargs["headed"] is True
+        assert set(kwargs) == {"url", "username", "password", "totp_secret"}
         return {
             "success": True,
             "domain_key": "portal.example.com",
@@ -67,41 +66,83 @@ def test_okta_login_can_enable_headed_mode(monkeypatch) -> None:
             "--password",
             "secret",
             "--headed",
-        ]
-    )
-
-    assert exit_code == 0
-
-
-def test_okta_login_passes_the_settle_budget(monkeypatch) -> None:
-    async def fake_perform_login(**kwargs):
-        assert kwargs["settle_ms"] == 2500
-        return {
-            "success": True,
-            "domain_key": "portal.example.com",
-            "message": "Session saved for portal.example.com",
-            "url": "https://portal.example.com",
-        }
-
-    monkeypatch.setattr(cli, "perform_login", fake_perform_login)
-    monkeypatch.setattr(cli.session_store, "get_session_path", lambda url: None)
-
-    exit_code = cli.main(
-        [
-            "login",
-            "https://portal.example.com",
-            "--username",
-            "user@example.com",
-            "--password",
-            "secret",
-            "--totp-secret",
-            "TESTTOTP",
+            "--timeout-ms",
+            "1000",
             "--settle-ms",
             "2500",
         ]
     )
 
     assert exit_code == 0
+    errors = capsys.readouterr().err
+    for flag in ["--headed", "--timeout-ms", "--settle-ms"]:
+        assert f"{flag} is ignored since 0.3.0" in errors
+
+
+def test_okta_login_exits_77_when_okta_rejects_the_credentials(monkeypatch, capsys) -> None:
+    async def fake_perform_login(**kwargs):
+        return {
+            "success": False,
+            "domain_key": None,
+            "message": "Login failed: credentials_rejected: Okta rejected the username or password",
+            "url": kwargs["url"],
+            "error_code": "credentials_rejected",
+        }
+
+    monkeypatch.setattr(cli, "perform_login", fake_perform_login)
+    monkeypatch.setattr(cli, "load_settings", lambda: AppSettings())
+    monkeypatch.setattr(cli, "load_stored_credentials", lambda: StoredCredentials())
+
+    exit_code = cli.main(
+        ["https://portal.example.com", "--username", "user@example.com", "--password", "x"]
+    )
+
+    assert exit_code == 77
+    assert "credentials_rejected" in capsys.readouterr().err
+
+
+def test_okta_globalprotect_prints_the_openconnect_cookie_as_json(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    async def fake_sign_in_globalprotect(**kwargs):
+        assert kwargs["server"] == "vpn.example.edu"
+        assert kwargs["interface"] == "portal"
+        assert kwargs["device_token"] is None
+        return GlobalProtectResult(
+            interface="portal",
+            user="user@example.com",
+            cookie_name="portal-userauthcookie",
+            cookie="gp-cookie",
+            device_token="dt-1",
+        )
+
+    monkeypatch.setattr(cli, "sign_in_globalprotect", fake_sign_in_globalprotect)
+    monkeypatch.setattr(cli.session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(cli, "load_settings", lambda: AppSettings())
+    monkeypatch.setattr(cli, "load_stored_credentials", lambda: StoredCredentials())
+
+    exit_code = cli.main(
+        [
+            "globalprotect",
+            "vpn.example.edu",
+            "--interface",
+            "portal",
+            "--username",
+            "user@example.com",
+            "--password",
+            "secret",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "server": "vpn.example.edu",
+        "interface": "portal",
+        "user": "user@example.com",
+        "cookieName": "portal-userauthcookie",
+        "cookie": "gp-cookie",
+    }
+    assert cli.session_store.read_device_token("https://vpn.example.edu/") == "dt-1"
 
 
 def test_okta_defaults_to_stored_config(monkeypatch) -> None:

@@ -1,16 +1,23 @@
-"""Per-domain session storage and validation.
+"""Per-domain session storage.
 
-Sessions are stored as Playwright storage_state JSON files under
-~/.okta-auth/sessions/{domain_hash}.json with a companion metadata file.
+Sessions are stored as Playwright-style storage_state JSON files under
+~/.okta-auth/sessions/{host}.json with a companion metadata file, readable only by
+the user. Releases before 0.3.0 wrote them with Playwright; the format is unchanged.
+Okta device tokens live apart in ~/.okta-auth/device-tokens.json, so deleting a
+session doesn't make Okta see a new device.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+from okta_auth.core import Cookie
 
 DATA_DIR = Path.home() / ".okta-auth"
 LEGACY_DATA_DIR = Path.home() / ".okta-auth-mcp"
@@ -46,37 +53,84 @@ def _migrate_legacy_sessions_dir() -> None:
 
 def ensure_sessions_dir() -> Path:
     _migrate_legacy_sessions_dir()
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    SESSIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     return SESSIONS_DIR
 
 
-def save_session(url: str, storage_state_path: str) -> str:
-    """Copy a Playwright storage_state file into the session store.
-
-    Returns the domain key used for retrieval.
-    """
+def save_session(url: str, cookies: List[Cookie]) -> str:
+    """Store the cookies a sign-in returned. Returns the domain key used for retrieval."""
     ensure_sessions_dir()
     key = _domain_key(url)
 
-    # Copy storage state
-    with open(storage_state_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    with open(_session_path(key), "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    data = {"cookies": [_storage_state_cookie(cookie) for cookie in cookies], "origins": []}
+    _write_secret(_session_path(key), data)
 
-    # Write metadata
     meta = {
         "url": url,
         "domain_key": key,
         "saved_at": time.time(),
         "saved_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "cookie_count": len(data.get("cookies", [])),
-        "origin_count": len(data.get("origins", [])),
+        "cookie_count": len(data["cookies"]),
+        "origin_count": 0,
     }
-    with open(_meta_path(key), "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    _write_secret(_meta_path(key), meta)
 
     return key
+
+
+def load_cookies(url: str) -> List[Cookie]:
+    """The stored cookies the URL's own host set and that are still live.
+
+    Older Playwright files hold every host's cookies, Okta's included; only the
+    target's are returned. A non-positive `expires` marks a session cookie.
+    """
+    path = get_session_path(url)
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+
+    host = (urlparse(url).hostname or "").lower()
+    now = time.time()
+    cookies = []
+    for item in data.get("cookies") or []:
+        if not isinstance(item, dict) or str(item.get("domain", "")).lstrip(".").lower() != host:
+            continue
+        expires = item.get("expires")
+        expires = expires if isinstance(expires, (int, float)) and expires > 0 else None
+        if expires is not None and expires <= now:
+            continue
+        cookies.append(
+            Cookie(
+                name=str(item.get("name", "")),
+                value=str(item.get("value", "")),
+                domain=host,
+                path=str(item.get("path") or "/"),
+                expires=int(expires) if expires is not None else None,
+                secure=bool(item.get("secure")),
+                http_only=bool(item.get("httpOnly")),
+            )
+        )
+    return cookies
+
+
+def read_device_token(url: str) -> Optional[str]:
+    """Okta's device token from the last sign-in that started at this URL's host."""
+    token = _read_device_tokens().get(_host(url))
+    return token if isinstance(token, str) else None
+
+
+def save_device_token(url: str, token: Optional[str]) -> None:
+    if not token:
+        return
+    tokens = _read_device_tokens()
+    if tokens.get(_host(url)) == token:
+        return
+    tokens[_host(url)] = token
+    _write_secret(_device_tokens_path(), tokens)
 
 
 def get_session_path(url: str) -> Optional[str]:
@@ -135,3 +189,44 @@ def delete_session(url: str) -> bool:
             path.unlink()
             deleted = True
     return deleted
+
+
+def _host(url: str) -> str:
+    return urlparse(url).netloc.lower()
+
+
+def _device_tokens_path() -> Path:
+    # ~/.okta-auth/device-tokens.json, the file the TypeScript CLI uses too. Derived
+    # from SESSIONS_DIR so that redirecting the sessions also redirects this.
+    return SESSIONS_DIR.parent / "device-tokens.json"
+
+
+def _read_device_tokens() -> Dict[str, Any]:
+    try:
+        with open(_device_tokens_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _storage_state_cookie(cookie: Cookie) -> Dict[str, Any]:
+    return {
+        "name": cookie.name,
+        "value": cookie.value,
+        "domain": cookie.domain,
+        "path": cookie.path,
+        # Playwright's marker for a session cookie.
+        "expires": cookie.expires if cookie.expires is not None else -1,
+        "httpOnly": cookie.http_only,
+        "secure": cookie.secure,
+    }
+
+
+def _write_secret(path: Path, data: Any) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    # os.open's mode only applies to new files.
+    os.chmod(path, 0o600)

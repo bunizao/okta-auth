@@ -1,13 +1,15 @@
 """okta_auth — MCP server for Okta SSO authentication with persistent session management.
 
-Provides tools for AI agents to authenticate via Okta SSO, persist browser sessions,
-and verify session validity. Sessions are stored per-domain in ~/.okta-auth/sessions/.
+Provides tools for AI agents to sign in through Okta over plain HTTP, persist the
+target site's cookies, and verify session validity. Sessions are stored per-domain
+in ~/.okta-auth/sessions/.
 """
 
 import json
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 
 from okta_auth.auth import session_store
 from okta_auth.auth.login import perform_login, verify_session
@@ -24,27 +26,29 @@ mcp = FastMCP("okta_auth")
 
 @mcp.tool(
     name="okta_login",
-    annotations={
-        "title": "Okta SSO Login",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Okta SSO Login",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
 )
 async def okta_login(
     url: str,
     username: Optional[str] = None,
     password: Optional[str] = None,
     totp_secret: Optional[str] = None,
-    headed: bool = False,
-    timeout_ms: int = 60000,
 ) -> str:
     """Authenticate to a website via Okta SSO and persist the session.
 
-    Launches a headless browser, navigates to the target URL, performs Okta login
-    (including TOTP MFA if configured), and saves the browser session for later use.
-    Sessions are stored per-domain in ~/.okta-auth/sessions/.
+    Signs in over plain HTTP (no browser): follows the URL to Okta, answers Okta
+    Identity Engine with the password and a TOTP code if configured, posts the SAML
+    response back, and saves the site's cookies. Sessions are stored per-domain in
+    ~/.okta-auth/sessions/. Only TOTP second factors work; push, SMS and email don't.
+
+    Never retry automatically when error_code is "credentials_rejected": Okta locks
+    the account after a few failed attempts. Ask the user to fix the credentials.
 
     Credentials are resolved in order: explicit parameter → environment variable
     → OS keyring when the local provider is set to `keyring`. When the provider
@@ -56,11 +60,11 @@ async def okta_login(
         username: Okta username or email. Falls back to OKTA_USERNAME or stored keyring data.
         password: Okta password. Falls back to OKTA_PASSWORD or stored keyring data.
         totp_secret: Base32 TOTP secret for automated MFA. Falls back to OKTA_TOTP_SECRET or stored keyring data.
-        headed: Show the browser window during login. Set to true for debugging.
-        timeout_ms: Maximum time in ms to wait for page loads (5000-300000, default 60000).
 
     Returns:
         JSON: {"success": bool, "domain_key": str|null, "message": str, "url": str}
+        On failure also "error_code": credentials_rejected, passcode_rejected,
+        mfa_unsupported, unexpected_step, handoff_failed, network, http_<n>, or null.
     """
     app_settings = load_settings()
     stored_credentials = (
@@ -99,55 +103,45 @@ async def okta_login(
         username=resolved_username,
         password=resolved_password,
         totp_secret=resolved_totp,
-        headed=headed,
-        timeout_ms=timeout_ms,
     )
     return json.dumps(result, indent=2)
 
 
 @mcp.tool(
     name="okta_check_session",
-    annotations={
-        "title": "Check Okta Session Validity",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Check Okta Session Validity",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
 )
-async def okta_check_session(
-    url: str,
-    timeout_ms: int = 30000,
-) -> str:
+async def okta_check_session(url: str) -> str:
     """Verify if a stored session for a URL is still valid.
 
-    Launches a headless browser with the stored session cookies, navigates to the
-    URL, and checks whether the session is still authenticated (not redirected to
-    Okta login).
+    Requests the URL with the stored cookies and checks that it no longer
+    redirects to Okta or another host.
 
     Args:
         url: URL to verify session against. Must match the URL used during login.
-        timeout_ms: Maximum time in ms to wait for page load (5000-120000, default 30000).
 
     Returns:
         JSON: {"valid": bool, "domain_key": str|null, "message": str, "url": str}
     """
-    result = await verify_session(
-        url=url,
-        timeout_ms=timeout_ms,
-    )
+    result = await verify_session(url=url)
     return json.dumps(result, indent=2)
 
 
 @mcp.tool(
     name="okta_list_sessions",
-    annotations={
-        "title": "List Stored Sessions",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
+    annotations=ToolAnnotations(
+        title="List Stored Sessions",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def okta_list_sessions() -> str:
     """List all stored authentication sessions.
@@ -165,13 +159,13 @@ async def okta_list_sessions() -> str:
 
 @mcp.tool(
     name="okta_delete_session",
-    annotations={
-        "title": "Delete Stored Session",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
+    annotations=ToolAnnotations(
+        title="Delete Stored Session",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def okta_delete_session(url: str) -> str:
     """Delete a stored session for a given URL.
@@ -192,13 +186,13 @@ async def okta_delete_session(url: str) -> str:
 
 @mcp.tool(
     name="okta_get_cookies",
-    annotations={
-        "title": "Get Session Cookies",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": False,
-    },
+    annotations=ToolAnnotations(
+        title="Get Session Cookies",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
 )
 async def okta_get_cookies(
     url: str,
@@ -206,8 +200,8 @@ async def okta_get_cookies(
 ) -> str:
     """Retrieve cookies from a stored session.
 
-    Returns the raw cookie data from a stored Playwright session. Useful for
-    making authenticated HTTP requests without launching a browser.
+    Returns the raw cookie data from a stored session. Useful for making
+    authenticated HTTP requests.
 
     Args:
         url: URL whose stored session cookies to retrieve.

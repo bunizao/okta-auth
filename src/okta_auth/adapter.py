@@ -14,7 +14,15 @@ from okta_auth.settings import AppSettings
 
 
 class OktaAdapterError(RuntimeError):
-    """Raised when okta-auth cannot provide a usable session."""
+    """Raised when okta-auth cannot provide a usable session.
+
+    `code` is the OktaSignInError code when sign-in failed, else None. Never retry
+    automatically on "credentials_rejected": Okta locks the account.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def get_cookies(url: str, *, target_domain_only: bool = True) -> list[dict[str, Any]]:
@@ -66,15 +74,10 @@ def get_cookie_value(url: str, cookie_name: str, *, target_domain_only: bool = T
     return preferred
 
 
-def ensure_login(
-    url: str,
-    *,
-    headed: bool = False,
-    timeout_ms: int = 60000,
-) -> dict[str, Any]:
-    """Ensure a valid okta-auth session exists for the URL."""
+def ensure_login(url: str) -> dict[str, Any]:
+    """Ensure a valid okta-auth session exists for the URL, signing in if needed."""
     if get_session_path(url):
-        status = asyncio.run(verify_session(url=url, timeout_ms=min(timeout_ms, 30000)))
+        status = asyncio.run(verify_session(url=url))
         if status.get("valid"):
             return {
                 "success": True,
@@ -94,12 +97,12 @@ def ensure_login(
             username=username,
             password=password,
             totp_secret=totp_secret,
-            headed=headed,
-            timeout_ms=timeout_ms,
         )
     )
     if not result.get("success"):
-        raise OktaAdapterError(str(result.get("message") or "okta-auth login failed"))
+        raise OktaAdapterError(
+            str(result.get("message") or "okta-auth login failed"), result.get("error_code")
+        )
 
     payload = dict(result)
     payload["performed_login"] = True

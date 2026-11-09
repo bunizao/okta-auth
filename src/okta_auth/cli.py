@@ -12,6 +12,7 @@ from typing import Any, Sequence
 from okta_auth.auth import session_store
 from okta_auth.auth.login import perform_login, verify_session
 from okta_auth.config_wizard import ConfigWizard
+from okta_auth.core import OktaSignInError, sign_in_globalprotect
 from okta_auth.credential_store import (
     CredentialStoreError,
     StoredCredentials,
@@ -21,12 +22,19 @@ from okta_auth.credential_store import (
 from okta_auth.credential_store import load_credentials as load_stored_credentials
 from okta_auth.runtime_credentials import resolve_runtime_credentials
 from okta_auth.settings import (
+    AppSettings,
     clear_op_env_file,
     clear_settings,
     describe_settings,
     load_settings,
     uses_keyring,
 )
+
+COMMANDS = {"login", "check", "list", "delete", "cookies", "globalprotect", "config"}
+
+# Okta rejected the username or password (EX_NOPERM). A supervising script should
+# stop rather than retry: repeated attempts lock the account.
+EXIT_CREDENTIALS_REJECTED = 77
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,27 +52,19 @@ def build_parser() -> argparse.ArgumentParser:
     login_parser.add_argument("--username", help="Okta username or email.")
     login_parser.add_argument("--password", help="Okta password.")
     login_parser.add_argument("--totp-secret", help="Base32 TOTP secret for MFA.")
-    login_parser.add_argument(
-        "--headed",
-        action="store_true",
-        help="Show the browser window during login. Default is headless.",
-    )
-    login_parser.add_argument("--timeout-ms", type=int, default=60000, help="Page timeout in ms.")
-    login_parser.add_argument(
-        "--settle-ms",
-        type=int,
-        default=0,
-        help="Wait up to this many ms for app-side authentication before saving.",
-    )
     login_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+    # Browser options from before 0.3.0, accepted so existing scripts keep working.
+    login_parser.add_argument("--headed", action="store_true", help=argparse.SUPPRESS)
+    login_parser.add_argument("--timeout-ms", type=int, help=argparse.SUPPRESS)
+    login_parser.add_argument("--settle-ms", type=int, help=argparse.SUPPRESS)
 
     check_parser = subparsers.add_parser(
         "check",
         help="Verify whether a stored session is still valid.",
     )
     check_parser.add_argument("url", help="URL to verify.")
-    check_parser.add_argument("--timeout-ms", type=int, default=30000, help="Page timeout in ms.")
     check_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+    check_parser.add_argument("--timeout-ms", type=int, help=argparse.SUPPRESS)
 
     list_parser = subparsers.add_parser("list", help="List saved sessions.")
     list_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
@@ -77,6 +77,20 @@ def build_parser() -> argparse.ArgumentParser:
     cookies_parser.add_argument("url", help="URL whose session cookies should be shown.")
     cookies_parser.add_argument("--domain", help="Optional domain substring filter.")
     cookies_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+
+    gp_parser = subparsers.add_parser(
+        "globalprotect",
+        help="Sign in to a GlobalProtect portal or gateway; print OpenConnect's one-time cookie.",
+    )
+    gp_parser.add_argument("server", help="Portal or gateway host, e.g. vpn.example.edu.")
+    gp_parser.add_argument(
+        "--interface",
+        choices=["gateway", "portal"],
+        help="Whose prelogin to ask. Default: the gateway's, then the portal's.",
+    )
+    gp_parser.add_argument("--username", help="Okta username or email.")
+    gp_parser.add_argument("--password", help="Okta password.")
+    gp_parser.add_argument("--totp-secret", help="Base32 TOTP secret for MFA.")
 
     config_parser = subparsers.add_parser(
         "config",
@@ -103,7 +117,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    if not raw_args or raw_args[0] not in {"login", "check", "list", "delete", "cookies", "config"}:
+    if not raw_args or raw_args[0] not in COMMANDS:
         raw_args.insert(0, "login")
 
     args = parser.parse_args(raw_args)
@@ -121,53 +135,76 @@ async def run_cli(args: argparse.Namespace) -> int:
         return _run_delete(args)
     if args.command == "cookies":
         return _run_cookies(args)
+    if args.command == "globalprotect":
+        return await _run_globalprotect(args)
     if args.command == "config":
         return _run_config(args)
     raise AssertionError(f"Unsupported command: {args.command}")
 
 
 async def _run_login(args: argparse.Namespace) -> int:
-    if args.settle_ms < 0:
-        raise SystemExit("--settle-ms must be zero or greater")
+    _warn_ignored(args, "headed", "timeout_ms", "settle_ms")
     stored_settings = load_settings()
-    stored_credentials = (
-        load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
-    )
     url = _require_value(args.url or stored_settings.default_url, "Target URL", secret=False)
-    username, password, totp_secret, _ = resolve_runtime_credentials(
-        explicit_username=args.username,
-        explicit_password=args.password,
-        explicit_totp_secret=args.totp_secret,
-        app_settings=stored_settings,
-        stored_credentials=stored_credentials,
-    )
-    username = _require_value(username, "Username", secret=False)
-    password = _require_value(password, "Password", secret=True)
-    totp_secret = _prompt_optional_value(totp_secret, "TOTP secret")
+    username, password, totp_secret = _resolve_credentials(args, stored_settings)
 
     result = await perform_login(
         url=url,
         username=username,
         password=password,
         totp_secret=totp_secret,
-        headed=args.headed,
-        timeout_ms=args.timeout_ms,
-        settle_ms=args.settle_ms,
     )
-    return _print_result(
+    exit_code = _print_result(
         result,
         use_json=args.json,
         success_key="success",
         success_text=_format_login_message(result),
         failure_text=result["message"],
     )
+    if result.get("error_code") == "credentials_rejected":
+        return EXIT_CREDENTIALS_REJECTED
+    return exit_code
+
+
+async def _run_globalprotect(args: argparse.Namespace) -> int:
+    """Always prints JSON, for a script that hands `cookie` to OpenConnect on stdin.
+    Nothing is saved but the device token; the cookie works once."""
+    username, password, totp_secret = _resolve_credentials(args, load_settings())
+    token_key = f"https://{args.server}/"
+    try:
+        result = await sign_in_globalprotect(
+            server=args.server,
+            interface=args.interface,
+            username=username,
+            password=password,
+            totp_secret=totp_secret,
+            device_token=session_store.read_device_token(token_key),
+        )
+    except OktaSignInError as error:
+        print(f"okta: {error.code}: {error}", file=sys.stderr)
+        if error.code == "credentials_rejected":
+            return EXIT_CREDENTIALS_REJECTED
+        return 1
+    except ValueError as error:
+        print(f"okta: {error}", file=sys.stderr)
+        return 1
+    session_store.save_device_token(token_key, result.device_token)
+
+    # The same keys the TypeScript CLI prints, so wrapper scripts work with either.
+    payload = {
+        "server": args.server,
+        "interface": result.interface,
+        "user": result.user,
+        "cookieName": result.cookie_name,
+        "cookie": result.cookie,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
 
 
 async def _run_check(args: argparse.Namespace) -> int:
-    result = await verify_session(
-        url=args.url,
-        timeout_ms=args.timeout_ms,
-    )
+    _warn_ignored(args, "timeout_ms")
+    result = await verify_session(url=args.url)
     return _print_result(
         result,
         use_json=args.json,
@@ -250,6 +287,35 @@ def _run_config(args: argparse.Namespace) -> int:
         print(json.dumps({"error": "--json is only supported with --show or --reset"}, indent=2))
         return 1
     return ConfigWizard(provider=args.provider).run()
+
+
+def _resolve_credentials(
+    args: argparse.Namespace, stored_settings: AppSettings
+) -> tuple[str, str, str | None]:
+    stored_credentials = (
+        load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
+    )
+    username, password, totp_secret, _ = resolve_runtime_credentials(
+        explicit_username=args.username,
+        explicit_password=args.password,
+        explicit_totp_secret=args.totp_secret,
+        app_settings=stored_settings,
+        stored_credentials=stored_credentials,
+    )
+    username = _require_value(username, "Username", secret=False)
+    password = _require_value(password, "Password", secret=True)
+    totp_secret = _prompt_optional_value(totp_secret, "TOTP secret")
+    return username, password, totp_secret
+
+
+def _warn_ignored(args: argparse.Namespace, *names: str) -> None:
+    for name in names:
+        if getattr(args, name) not in (None, False):
+            flag = "--" + name.replace("_", "-")
+            print(
+                f"okta: {flag} is ignored since 0.3.0: sign-in no longer uses a browser.",
+                file=sys.stderr,
+            )
 
 
 def _require_value(value: str | None, label: str, *, secret: bool) -> str:
