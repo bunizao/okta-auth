@@ -1,61 +1,92 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+Guidance for coding agents working in this repository.
 
-## Project Overview
+## Project
 
-okta-auth is an Okta login toolkit with an interactive CLI and an MCP server for session reuse. It uses Playwright to automate Okta SSO and persists per-domain session state for reuse by AI agents.
+okta-auth (PyPI: `okta-auth-cli`) signs in to SAML apps and GlobalProtect
+portals behind Okta Identity Engine over plain HTTP. `okta_auth.core` is the
+protocol; the `okta` CLI, the `okta-auth` MCP server and `adapter.py` sit on top.
+
+## Reference implementation
+
+The TypeScript package (`okta-auth-cli` on npm, branch `feat/typescript-rewrite`
+of this repository, `src/*.ts`) is the reference. `okta_auth.core` mirrors it
+module for module. Protocol fixes land in both in the same release, with a
+test of the same case name in each.
+
+| TypeScript              | Python                              |
+|-------------------------|-------------------------------------|
+| `src/sign-in.ts`        | `src/okta_auth/core/sign_in.py`     |
+| `src/globalprotect.ts`  | `src/okta_auth/core/globalprotect.py` |
+| `src/idx.ts`            | `src/okta_auth/core/idx.py`         |
+| `src/client.ts`         | `src/okta_auth/core/client.py`      |
+| `src/cookies.ts`        | `src/okta_auth/core/cookies.py`     |
+| `src/html.ts`           | `src/okta_auth/core/html.py`        |
+| `src/totp.ts`           | `src/okta_auth/core/totp.py`        |
+| `src/errors.ts`         | `src/okta_auth/core/errors.py`      |
+| `tests/fake-sso.ts`     | `tests/fake_sso.py`                 |
+| `tests/<name>.test.ts`  | `tests/test_<name>.py`              |
+
+Test names are the TypeScript case names, lowercased, with every run of other
+characters replaced by `_`: "skips IDX when Okta already has a session" becomes
+`test_skips_idx_when_okta_already_has_a_session`.
+
+Deliberate differences:
+
+- `now` returns seconds (TS: milliseconds).
+- Bad input raises `ValueError` (TS: `TypeError`).
+- `totp()` is synchronous (TS: async, because WebCrypto is).
+- Names are snake_case: `device_token`, `totp_secret`, `cookie_name`, `http_only`.
+- Tests inject an `httpx` transport (`transport=`) instead of `fetch`.
 
 ## Commands
 
 ```bash
-# Setup
 uv venv && source .venv/bin/activate
 uv pip install -e '.[dev]'
-playwright install chromium
 
-# Quality gates (run all three before submitting)
 ruff format --check .
 ruff check .
+mypy
 pytest
-
-# Run single test
-pytest tests/test_session_store.py -v
-
-# Run interactive CLI
-okta
-
-# Run MCP server (stdio transport, stdout is JSON-RPC)
-okta-auth
 ```
 
-## Architecture
+## Layout
 
 ```
 src/okta_auth/
-├── server.py          # FastMCP entry point, defines all 5 MCP tools
-├── log.py             # Stderr-only logging (stdout reserved for JSON-RPC)
+├── core/           # the protocol; mirrors the TS core (table above)
 ├── auth/
-│   ├── login.py       # auto_login() engine: selector-based form filling, portal detection, MFA/TOTP
-│   ├── session_store.py  # Per-domain session CRUD at ~/.okta-auth/sessions/
-│   └── totp.py        # pyotp wrapper for TOTP code generation
-└── browser/
-    ├── controller.py  # BrowserController async context manager, BrowserConfig dataclass
-    ├── detection.py   # Cross-platform browser executable discovery with env var overrides
-    └── helpers.py     # fill_first_match(), click_first_match(), maybe_switch_to_code_factor()
+│   ├── login.py          # perform_login / verify_session: core + session store
+│   └── session_store.py  # ~/.okta-auth/sessions/<host>.json (0600), device-tokens.json
+├── cli.py          # okta: login, check, list, delete, cookies, config, globalprotect
+├── server.py       # okta-auth: FastMCP stdio server
+├── adapter.py      # ensure_login / get_cookies for other Python packages
+└── log.py          # stderr only
+tests/
+├── fake_sso.py     # scripted fake Okta org, SAML SP and GlobalProtect portal (httpx.MockTransport)
+└── test_*.py
 ```
 
-### Key Patterns
+## Rules
 
-- **Selector redundancy**: `login.py` defines 16+ CSS selectors per form field (USERNAME_SELECTORS, PASSWORD_SELECTORS, etc.) tried in priority order for broad Okta form compatibility.
-- **Portal detection**: `_is_on_portal()` confirms auth completion by checking domain change + login field absence.
-- **Session keying**: Sessions are stored as `{domain_hash}.json` + `{domain_hash}.meta.json` using the URL's netloc as the domain key.
-- **Async-first**: All I/O uses `async/await`; the server runs on asyncio via FastMCP.
-- **Browser fallback**: `BrowserController` tries the requested channel first, falls back to default Chromium on launch failure.
+- `core` uses httpx with `follow_redirects=False` and its own host-only cookie
+  jar; httpx's jar stays disabled. HTTPS only, with timeouts. Stdlib for TOTP.
+- Error messages and logs never contain passwords, one-time codes, the TOTP
+  secret, state tokens, query strings or cookie values. Use `where(url)` for
+  locations, and `raise ... from None` when wrapping httpx errors (their
+  messages carry full URLs). Tests assert this.
+- `sign_in` never retries. A `credentials_rejected` retry can lock the account;
+  the CLI exits 77 instead.
+- Credentials only go to the Okta host that served the sign-in page; cookies
+  only to the host that set them.
+- New IDX behaviour gets a scripted case in `tests/fake_sso.py` and a test,
+  ported from (or to) the TS repo under the same name.
+- Never sign in to a real Okta org from tests or scripts.
+- Logs go to stderr. stdout is the MCP JSON-RPC channel.
 
-## Code Style
+## Code style
 
-- **Formatter/Linter**: Ruff (line-length 100, target py311, double quotes, LF endings)
-- **Lint rules**: E, F, I (isort), B (flake8-bugbear); E501 ignored
-- **Type checking**: mypy with `check_untyped_defs = true`, `ignore_missing_imports = true`
-- **All logs go to stderr** — never print to stdout (breaks MCP stdio transport)
+Ruff (line length 100, rules E, F, I, B), mypy over `src`, English comments,
+Conventional Commits.

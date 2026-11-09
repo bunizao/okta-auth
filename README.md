@@ -3,10 +3,16 @@
 > **Alpha**: this project is under active development. APIs, tool signatures, and
 > session formats may change between releases.
 
-`okta-auth` is an Okta login toolkit with two entry points:
+`okta-auth` signs in to SAML apps and GlobalProtect VPN portals behind Okta
+Identity Engine over plain HTTP. No browser. It has two entry points:
 
 - `okta`: interactive CLI for humans
 - `okta-auth`: MCP server for AI agents that reuse saved sessions
+
+MFA is answered with a TOTP code (Google Authenticator, or Okta Verify's code).
+Push-only MFA and Okta Classic Engine orgs are not supported.
+
+Upgrading from 0.2.x? See [Migrating to 0.3.0](#migrating-to-030).
 
 Sessions are stored under `~/.okta-auth/sessions/`. Existing sessions under
 `~/.okta-auth-mcp/sessions/` are migrated automatically.
@@ -29,17 +35,6 @@ pipx install okta-auth-cli
 
 ```bash
 pip install okta-auth-cli
-```
-
-### Browser setup
-
-The project uses Playwright for browser automation. It automatically prefers a
-local Chrome or Edge install when available.
-
-If no supported system browser is found, install Playwright Chromium:
-
-```bash
-playwright install chromium
 ```
 
 ## Upgrade
@@ -81,7 +76,8 @@ Or pass a target URL directly:
 okta https://portal.company.com
 ```
 
-The login flow is headless by default. Use `--headed` to show the browser.
+`okta` exits with code 77 when Okta rejects the username or password. It never
+retries on its own: repeated attempts can lock the account.
 
 ### 3. Reuse the session from MCP
 
@@ -217,12 +213,41 @@ op run --env-file=$HOME/.okta-auth/op.env -- uvx --from okta-auth-cli okta-auth
 - `okta list`: list stored sessions
 - `okta delete <url>`: delete a stored session
 - `okta cookies <url>`: inspect stored cookies
+- `okta globalprotect <server>`: sign in to a GlobalProtect portal or gateway
+  and print OpenConnect's one-time cookie as JSON
 
 ### Example
 
 ```bash
-okta https://portal.company.com --username you@company.com --headed
+okta https://portal.company.com --username you@company.com
 ```
+
+### GlobalProtect
+
+```bash
+okta globalprotect vpn.company.com
+```
+
+prints `{"server", "interface", "user", "cookieName", "cookie"}`. It asks the
+gateway first and falls back to the portal; `--interface gateway|portal` asks
+only one. Hand the result to OpenConnect:
+
+```bash
+gp=$(okta globalprotect vpn.company.com)
+jq -r .cookie <<<"$gp" | sudo openconnect --protocol=gp \
+  --user="$(jq -r .user <<<"$gp")" \
+  --usergroup="$(jq -r '.interface + ":" + .cookieName' <<<"$gp")" \
+  --passwd-on-stdin vpn.company.com
+```
+
+The cookie works once. It is printed because OpenConnect needs it; don't log it.
+Nothing is saved except Okta's device token.
+
+### Exit codes
+
+- `0`: success
+- `1`: any other failure
+- `77`: Okta rejected the username or password
 
 ## MCP Server
 
@@ -279,6 +304,49 @@ With 1Password:
 Use `okta` for the interactive CLI. Use `okta-auth` only when wiring the package
 into an MCP client.
 
+## Migrating to 0.3.0
+
+0.3.0 replaces the Playwright browser with plain HTTP requests to Okta's IDX API.
+
+- No browser to install. `playwright` and `pyotp` are no longer dependencies.
+- `--headed`, `--timeout-ms` and `--settle-ms` are still accepted but ignored,
+  with a warning. Drop them from scripts.
+- The `okta_login` and `okta_check_session` MCP tools no longer take `headed`
+  or `timeout_ms`. A failed `okta_login` result carries `error_code`
+  (`credentials_rejected`, `passcode_rejected`, `mfa_unsupported`,
+  `unexpected_step`, `handoff_failed`, `network` or `http_<status>`).
+- `okta_auth.adapter.ensure_login(url)` no longer takes `headed` or `timeout_ms`;
+  `OktaAdapterError` has a `code` attribute.
+- `okta` exits 77 when Okta rejects the credentials.
+- `okta check` follows the URL with the stored cookies: the session is active
+  when the site no longer redirects to another host.
+- Session files keep the same format, now hold only the target site's cookies
+  and are written with mode 0600. Okta's device token is kept in
+  `~/.okta-auth/device-tokens.json`, so Okta keeps recognising this machine.
+- Okta Classic Engine orgs and push-only MFA fail with a clear error instead of
+  waiting on a browser.
+- New: `okta globalprotect <server>`.
+
+## Python API
+
+```python
+import asyncio
+from okta_auth import OktaSignInError, sign_in, sign_in_globalprotect, totp
+
+result = asyncio.run(sign_in(
+    url="https://portal.company.com/login",
+    username="you@company.com",
+    password="...",
+    totp_secret="JBSWY3DPEHPK3PXP",
+    device_token=None,  # pass result.device_token back next time
+))
+result.cookies       # the target site's cookies
+result.device_token  # Okta's DT cookie
+```
+
+`sign_in` raises `OktaSignInError` with a `code`, and `ValueError` for bad input.
+It never retries.
+
 ## Security
 
 - This project is intended for local trusted execution.
@@ -286,13 +354,16 @@ into an MCP client.
 - Prefer `okta config` over passing credentials directly on the command line.
 - Prefer `keyring` or `op run` over plaintext shell files.
 - Never post cookie values, passwords, or TOTP secrets in issues or logs.
+- Credentials are only sent to the Okta host that served the sign-in page, and
+  cookies only to the host that set them. Only `https://` URLs are accepted.
+- Errors name a host and path, never passwords, codes, tokens, query strings or
+  cookie values.
 
 ## Development
 
 ```bash
 uv venv && source .venv/bin/activate
 uv pip install -e '.[dev]'
-playwright install chromium
 ```
 
 Run checks locally:
@@ -300,5 +371,9 @@ Run checks locally:
 ```bash
 ruff format --check .
 ruff check .
+mypy
 pytest
 ```
+
+Tests run against a scripted fake Okta org (`tests/fake_sso.py`), never a real
+one.
