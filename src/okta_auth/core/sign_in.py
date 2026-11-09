@@ -12,7 +12,7 @@ import httpx
 from .client import Client, Page
 from .cookies import Cookie
 from .errors import OktaSignInError, where
-from .html import read_saml_form, read_state_token
+from .html import is_login_page, read_saml_form, read_state_token
 from .idx import Credentials, IdxState, Sends, error_keys, next_step
 from .totp import base32_decode
 
@@ -59,9 +59,13 @@ async def sign_in(
     async with Client(transport, now, device_token) as client:
         acs = await hand_off(client, await client.follow(target), credentials, now)
 
-        # Signed in means the page that sent us to Okta no longer does.
+        # The target must finish with a successful response, without a login form.
         check = await client.follow(target)
-        if check.url.host != target.host or check.status >= 400:
+        if (
+            check.url.host != target.host
+            or not 200 <= check.status < 300
+            or is_login_page(check.body)
+        ):
             raise OktaSignInError(
                 "handoff_failed",
                 f"{where(target)} is still not signed in after the SAML post "

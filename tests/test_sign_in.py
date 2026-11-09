@@ -302,6 +302,31 @@ def test_rejects_bad_input_before_any_request() -> None:
     assert fake.requests == []
 
 
+def test_rejects_malformed_base32_before_any_request() -> None:
+    fake, run = setup()
+    for secret in ("A", "AAA", "AAAAAA", "MZ", "M=Y"):
+        with pytest.raises(ValueError):
+            run(totp_secret=secret)
+    assert fake.requests == []
+
+
+def test_rejects_a_same_host_login_page_after_the_saml_post() -> None:
+    _, run = setup({"sp_rejects": True, "sp_login_page": True})
+    assert rejection(run).code == "handoff_failed"
+
+
+def test_rejects_an_unfinished_redirect_after_the_saml_post() -> None:
+    fake, run = setup()
+    fake.set_override(
+        lambda request: (
+            httpx.Response(302)
+            if str(request.url) == TARGET and request.cookies.get("MoodleSession") == "authed"
+            else None
+        )
+    )
+    assert rejection(run).code == "handoff_failed"
+
+
 def test_preserves_saml_posts_across_same_origin_307_and_308_redirects() -> None:
     for status in (307, 308):
         fake, run = setup({"acs_redirect": status})

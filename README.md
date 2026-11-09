@@ -319,7 +319,8 @@ into an MCP client.
   `OktaAdapterError` has a `code` attribute.
 - `okta` exits 77 when Okta rejects the credentials.
 - `okta check` follows the URL with the stored cookies: the session is active
-  when the site no longer redirects to another host.
+  when live cookies reach a successful response on the same host without a
+  login form.
 - Session files keep the same format, now hold only the target site's cookies
   and are written with mode 0600. Okta's device token is kept in
   `~/.okta-auth/device-tokens.json`, so Okta keeps recognising this machine.

@@ -1,9 +1,12 @@
 import json
 import subprocess
 
+import httpx
 import pytest
 
 from okta_auth import adapter, runtime_credentials
+from okta_auth.auth import login, session_store
+from okta_auth.core import Cookie
 from okta_auth.credential_store import StoredCredentials
 from okta_auth.settings import AppSettings
 
@@ -93,6 +96,32 @@ def test_ensure_login_uses_stored_credentials(monkeypatch) -> None:
     monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
 
     result = adapter.ensure_login("https://school.example.edu")
+
+    assert result["performed_login"] is True
+
+
+def test_ensure_login_reauthenticates_after_a_same_host_login_page(monkeypatch, tmp_path) -> None:
+    url = "https://school.example.edu/login"
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    session_store.save_session(url, [Cookie("session", "anon", "school.example.edu")])
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text='<form><input type="password"></form>')
+    )
+
+    async def verify_stored_session(**kwargs):
+        return await login.verify_session(**kwargs, transport=transport)
+
+    async def fake_perform_login(**kwargs):
+        assert kwargs["url"] == url
+        return {"success": True, "url": url}
+
+    monkeypatch.setattr(adapter, "verify_session", verify_stored_session)
+    monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
+    monkeypatch.setattr(
+        adapter, "_resolve_credentials", lambda: ("test-user", "test-password", None, AppSettings())
+    )
+
+    result = adapter.ensure_login(url)
 
     assert result["performed_login"] is True
 

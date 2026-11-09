@@ -63,6 +63,8 @@ class FakeOptions:
     sp_rejects: bool = False
     # The ACS moved within the same origin and requires the original POST.
     acs_redirect: Literal[307, 308] | None = None
+    # After an unsuccessful SAML post, the SP serves its own login form.
+    sp_login_page: bool = False
     # How GlobalProtect prelogin hands over the SAMLRequest.
     gp_binding: Literal["REDIRECT", "POST"] = "REDIRECT"
     # GlobalProtect interfaces whose prelogin offers SAML; the rest answer Error.
@@ -123,6 +125,7 @@ class FakeSso:
         self._app_path = APP_PATH
         # The GlobalProtect interface whose prelogin started the sign-in.
         self._gp_interface: GpInterface | None = None
+        self._saml_posted = False
         # Lets a test replace any route.
         self._override: Override | None = None
 
@@ -155,6 +158,8 @@ class FakeSso:
         if method == "GET" and url.path in ("/login/index.php", "/my/"):
             if signed_in:
                 return _html("<p>You are logged in</p>")
+            if self._saml_posted and self.options.sp_login_page:
+                return _html('<form><input name="username"><input type="password"></form>')
             location = f"https://{OKTA}{APP_PATH}?SAMLRequest=request&RelayState={quote(RELAY_STATE, safe='')}"
             return _redirect(
                 location,
@@ -169,6 +174,7 @@ class FakeSso:
                 headers={"location": "/canonical-acs", "set-cookie": "acs-route=canonical; Path=/"},
             )
         if method == "POST" and url.path in (ACS_PATH, "/canonical-acs"):
+            self._saml_posted = True
             form = _form(request.body)
             accepted = (
                 not self.options.sp_rejects

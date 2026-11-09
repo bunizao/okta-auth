@@ -120,8 +120,8 @@ async def okta_login(
 async def okta_check_session(url: str) -> str:
     """Verify if a stored session for a URL is still valid.
 
-    Requests the URL with the stored cookies and checks that it no longer
-    redirects to Okta or another host.
+    Requests the URL with live stored cookies and checks for a successful
+    response on the same host without a login form.
 
     Args:
         url: URL to verify session against. Must match the URL used during login.

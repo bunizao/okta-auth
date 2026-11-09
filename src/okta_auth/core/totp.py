@@ -24,8 +24,8 @@ def totp(secret: str, now: float | None = None) -> str:
 
 def base32_decode(secret: str) -> bytes:
     """Accepts the forms authenticator apps show: any case, spaces, dashes, padding."""
-    clean = re.sub(r"[\s=-]", "", secret).upper()
-    if not clean or re.search(r"[^A-Z2-7]", clean):
+    clean = re.sub(r"[\s-]", "", secret).rstrip("=").upper()
+    if not clean or re.search(r"[^A-Z2-7]", clean) or len(clean) % 8 not in (0, 2, 4, 5, 7):
         # Deliberately says nothing about the value itself.
         raise ValueError("TOTP secret is not valid base32")
 
@@ -39,4 +39,7 @@ def base32_decode(secret: str) -> bytes:
             bits -= 8
             out.append((value >> bits) & 0xFF)
             value &= (1 << bits) - 1
+    # Unused bits in the final Base32 character must be zero.
+    if value != 0:
+        raise ValueError("TOTP secret is not valid base32")
     return bytes(out)

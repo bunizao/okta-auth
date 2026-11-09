@@ -5,10 +5,12 @@ import json
 import stat
 import time
 
+import httpx
 import pytest
 
 from fake_sso import OKTA, PASSWORD, SP, TARGET, USERNAME, FakeOptions, fake_sso
 from okta_auth.auth import login, session_store
+from okta_auth.core import Cookie
 
 
 @pytest.fixture(autouse=True)
@@ -103,3 +105,38 @@ def test_verify_session_reports_a_missing_session() -> None:
 
     assert result["valid"] is False
     assert result["domain_key"] is None
+
+
+def test_verify_session_rejects_an_empty_cookie_store_without_sending_requests() -> None:
+    fake = fake_sso(FakeOptions(now=time.time))
+    session_store.save_session(TARGET, [])
+
+    result = asyncio.run(login.verify_session(TARGET, transport=fake.transport))
+
+    assert result["valid"] is False
+    assert fake.requests == []
+
+
+def test_verify_session_rejects_a_same_host_login_page() -> None:
+    session_store.save_session(TARGET, [Cookie("MoodleSession", "anon", SP)])
+    requests = []
+
+    def login_page(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200, text='<form><input name="username"><input type="password"></form>'
+        )
+
+    result = asyncio.run(login.verify_session(TARGET, transport=httpx.MockTransport(login_page)))
+
+    assert result["valid"] is False
+    assert len(requests) == 1
+
+
+def test_verify_session_rejects_an_unresolved_redirect() -> None:
+    session_store.save_session(TARGET, [Cookie("MoodleSession", "anon", SP)])
+    transport = httpx.MockTransport(lambda request: httpx.Response(302))
+
+    result = asyncio.run(login.verify_session(TARGET, transport=transport))
+
+    assert result["valid"] is False

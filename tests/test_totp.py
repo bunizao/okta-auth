@@ -31,3 +31,9 @@ def test_accepts_secrets_as_authenticator_apps_show_them() -> None:
 def test_rejects_a_malformed_secret_without_echoing_it() -> None:
     with pytest.raises(ValueError, match=r"^TOTP secret is not valid base32$"):
         totp("not-base32!", 0)
+
+
+def test_rejects_incomplete_and_noncanonical_base32_without_echoing_it() -> None:
+    for secret in ("A", "AAA", "AAAAAA", "MZ", "M=Y", "MY=A", "===="):
+        with pytest.raises(ValueError, match=r"^TOTP secret is not valid base32$"):
+            totp(secret, 0)

@@ -183,3 +183,11 @@ def test_rejects_bad_input_before_any_request() -> None:
     with pytest.raises(ValueError):
         run(totp_secret="not base32!")
     assert fake.requests == []
+
+
+def test_rejects_malformed_base32_before_any_request() -> None:
+    fake, run = setup()
+    for secret in ("A", "AAA", "AAAAAA", "MZ", "M=Y"):
+        with pytest.raises(ValueError):
+            run(totp_secret=secret)
+    assert fake.requests == []

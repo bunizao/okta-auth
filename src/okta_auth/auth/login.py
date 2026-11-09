@@ -14,6 +14,7 @@ import httpx
 from okta_auth.auth import session_store
 from okta_auth.core import OktaSignInError, sign_in
 from okta_auth.core.client import Client
+from okta_auth.core.html import is_login_page
 
 
 async def perform_login(
@@ -62,8 +63,8 @@ async def verify_session(
 ) -> dict[str, Any]:
     """Check whether the stored cookies still sign in to the URL's site.
 
-    Signed in means the URL no longer sends us to another host (Okta), the same
-    check sign_in finishes with. Returns {valid, domain_key, message, url}.
+    The stored cookies must reach a successful page on the same host, without a
+    login form, the same check sign_in finishes with. Returns {valid, domain_key, message, url}.
     """
     if not session_store.get_session_path(url):
         return {
@@ -76,8 +77,16 @@ async def verify_session(
     domain_key = session_store._domain_key(url)
     try:
         target = httpx.URL(url)
+        cookies = session_store.load_cookies(url)
+        if not cookies:
+            return {
+                "valid": False,
+                "domain_key": domain_key,
+                "message": "Session expired or invalid",
+                "url": url,
+            }
         async with Client(transport, time.time) as client:
-            for cookie in session_store.load_cookies(url):
+            for cookie in cookies:
                 client.jar.set(cookie)
             page = await client.follow(target)
     except OktaSignInError as error:
@@ -87,7 +96,9 @@ async def verify_session(
         message = "Session check failed: not a valid URL"
         return {"valid": False, "domain_key": domain_key, "message": message, "url": url}
 
-    active = page.url.host == target.host and page.status < 400
+    active = (
+        page.url.host == target.host and 200 <= page.status < 300 and not is_login_page(page.body)
+    )
     return {
         "valid": active,
         "domain_key": domain_key,

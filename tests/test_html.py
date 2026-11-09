@@ -5,9 +5,33 @@ import pytest
 
 from fake_sso import SAML_RESPONSE, SP, saml_form_page
 from okta_auth.core.errors import OktaSignInError
-from okta_auth.core.html import SamlForm, read_saml_form, read_state_token
+from okta_auth.core.html import SamlForm, is_login_page, read_saml_form, read_state_token
 
 PAGE = httpx.URL("https://example.okta.com/app/x/y/sso/saml")
+
+
+def test_recognises_password_and_identifier_first_login_fields() -> None:
+    for html in (
+        '<form><input name="username"><input type="password"></form>',
+        "<FORM><INPUT TYPE=PASSWORD></FORM>",
+        '<form><input type="email" autocomplete="username"></form>',
+        '<input id="okta-signin-username">',
+    ):
+        assert is_login_page(html)
+
+
+def test_ignores_hidden_fields_and_login_markup_outside_the_page_content() -> None:
+    for html in (
+        "<p>You are logged in</p>",
+        '<!-- <input type="password"> --><script>const template = \'<input name="username">\';</script>',
+        '<style>/* <input type="password"> */</style>',
+        '<form><input name="username" type="hidden"></form>',
+        '<form><input type="password" autocomplete="new-password"></form>',
+        '<input data-name="username" name="search">',
+        '<input type="password" hidden>',
+        '<input name="username" disabled>',
+    ):
+        assert not is_login_page(html)
 
 
 def test_read_state_token_decodes_javascript_escapes() -> None:

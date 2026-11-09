@@ -17,10 +17,36 @@ class SamlForm:
 _STATE_TOKEN = re.compile(r"""stateToken["']?\s*[=:]\s*["']([^"']+)["']""")
 _INPUT = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
 _FORM = re.compile(r"<form\b[^>]*>", re.IGNORECASE)
-_ATTRIBUTE = re.compile(r"""([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_ATTRIBUTE = re.compile(r"""\s([\w-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?""")
 _ENTITY = re.compile(r"&(#x[0-9a-f]+|#[0-9]+|[a-z]+);", re.IGNORECASE)
 _JS_HEX = re.compile(r"\\x([0-9a-f]{2})", re.IGNORECASE)
 _JS_UNICODE = re.compile(r"\\u([0-9a-f]{4})", re.IGNORECASE)
+
+
+def is_login_page(html: str) -> bool:
+    """An HTTP 200 on the target host may still be a sign-in form. Ignore templates
+    and hidden fields so embedded login markup does not invalidate a session."""
+    content = re.sub(r"<!--[\s\S]*?-->", "", html)
+    content = re.sub(r"<(script|style)\b[^>]*>[\s\S]*?</\1\s*>", "", content, flags=re.IGNORECASE)
+    for match in _INPUT.finditer(content):
+        attributes = _read_attributes(match.group(0))
+        input_type = attributes.get("type", "").lower()
+        autocomplete = attributes.get("autocomplete", "").lower().split()
+        if (
+            input_type == "hidden"
+            or "hidden" in attributes
+            or "disabled" in attributes
+            or "new-password" in autocomplete
+        ):
+            continue
+        if (
+            input_type == "password"
+            or attributes.get("name", "").lower() == "username"
+            or attributes.get("id", "").lower() == "okta-signin-username"
+            or "username" in autocomplete
+        ):
+            return True
+    return False
 
 
 def read_state_token(html: str, url: httpx.URL) -> str:
@@ -69,7 +95,7 @@ def read_saml_form(html: str, field: str = "SAMLResponse") -> SamlForm | None:
 def _read_attributes(tag: str) -> dict[str, str]:
     attributes: dict[str, str] = {}
     for match in _ATTRIBUTE.finditer(tag):
-        value = match.group(2) if match.group(2) is not None else match.group(3) or ""
+        value = next((value for value in match.groups()[1:] if value is not None), "")
         attributes[match.group(1).lower()] = decode_entities(value)
     return attributes
 
