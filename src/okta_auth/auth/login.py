@@ -15,6 +15,7 @@ from okta_auth.auth import session_store
 from okta_auth.core import OktaSignInError, sign_in
 from okta_auth.core.client import Client
 from okta_auth.core.html import is_login_page
+from okta_auth.core.sign_in import Progress, quiet
 
 
 async def perform_login(
@@ -24,6 +25,7 @@ async def perform_login(
     totp_secret: str | None = None,
     *,
     transport: httpx.AsyncBaseTransport | None = None,
+    progress: Progress = quiet,
 ) -> dict[str, Any]:
     """Sign in through Okta and store the target site's cookies.
 
@@ -40,6 +42,7 @@ async def perform_login(
             totp_secret=totp_secret,
             device_token=session_store.read_device_token(url),
             transport=transport,
+            progress=progress,
         )
     except OktaSignInError as error:
         return _login_failure(url, f"{error.code}: {error}", error.code)

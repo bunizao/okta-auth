@@ -191,3 +191,17 @@ def test_rejects_malformed_base32_before_any_request() -> None:
         with pytest.raises(ValueError):
             run(totp_secret=secret)
     assert fake.requests == []
+
+
+def test_reports_which_interface_it_asks() -> None:
+    # Python only for now: the TS CLI has no progress output yet.
+    steps: list[str] = []
+    _, run = setup(gp_saml=["portal"], okta_session=True)
+    run(progress=steps.append)
+
+    assert steps == [
+        f"Asking the gateway at {GP} for SAML sign-in",
+        f"Asking the portal at {GP} for SAML sign-in",
+        f"{OKTA} already has a session",
+        f"Posting the SAML response to {GP}",
+    ]

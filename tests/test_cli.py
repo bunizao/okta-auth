@@ -46,7 +46,7 @@ def test_okta_defaults_to_login(monkeypatch, capsys) -> None:
 
 def test_okta_login_ignores_browser_options_from_before_0_3(monkeypatch, capsys) -> None:
     async def fake_perform_login(**kwargs):
-        assert set(kwargs) == {"url", "username", "password", "totp_secret"}
+        assert set(kwargs) == {"url", "username", "password", "totp_secret", "progress"}
         return {
             "success": True,
             "domain_key": "portal.example.com",

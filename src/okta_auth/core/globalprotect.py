@@ -15,7 +15,7 @@ from .client import Client, Page
 from .errors import OktaSignInError, where
 from .html import decode_entities, read_saml_form
 from .idx import Credentials
-from .sign_in import device_token_of, hand_off, http_error
+from .sign_in import Progress, device_token_of, hand_off, http_error, quiet
 from .totp import base32_decode
 
 GlobalProtectInterface = Literal["gateway", "portal"]
@@ -71,6 +71,7 @@ async def sign_in_globalprotect(
     device_token: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     now: Callable[[], float] = time.time,
+    progress: Progress = quiet,
 ) -> GlobalProtectResult:
     """Signs in to a GlobalProtect portal or gateway that uses Okta SAML, with plain
     HTTP, and returns the cookie OpenConnect connects with:
@@ -91,8 +92,11 @@ async def sign_in_globalprotect(
 
     credentials = Credentials(username, password, totp_secret)
     async with Client(transport, now, device_token) as client:
-        start = await _prelogin(client, base, [interface] if interface else ["gateway", "portal"])
-        acs = await hand_off(client, await _open_okta(client, start), credentials, now)
+        interfaces: list[GlobalProtectInterface] = (
+            [interface] if interface else ["gateway", "portal"]
+        )
+        start = await _prelogin(client, base, interfaces, progress)
+        acs = await hand_off(client, await _open_okta(client, start), credentials, now, progress)
         user, cookie_name, cookie = _read_result(acs)
         return GlobalProtectResult(
             interface=start.interface,
@@ -104,7 +108,10 @@ async def sign_in_globalprotect(
 
 
 async def _prelogin(
-    client: Client, base: httpx.URL, interfaces: list[GlobalProtectInterface]
+    client: Client,
+    base: httpx.URL,
+    interfaces: list[GlobalProtectInterface],
+    progress: Progress,
 ) -> _SamlStart:
     """Asks each interface's prelogin in turn and returns the first SAML request.
     Nothing reaches Okta until one offers SAML."""
@@ -112,6 +119,7 @@ async def _prelogin(
     for name in interfaces:
         url = base.join(PRELOGIN_PATHS[name])
         asked.append(url)
+        progress(f"Asking the {name} at {base.host} for SAML sign-in")
         page = await client.follow(
             url,
             method="POST",

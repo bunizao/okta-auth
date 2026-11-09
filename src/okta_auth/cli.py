@@ -153,6 +153,7 @@ async def _run_login(args: argparse.Namespace) -> int:
         username=username,
         password=password,
         totp_secret=totp_secret,
+        progress=_show_progress,
     )
     exit_code = _print_result(
         result,
@@ -179,6 +180,7 @@ async def _run_globalprotect(args: argparse.Namespace) -> int:
             password=password,
             totp_secret=totp_secret,
             device_token=session_store.read_device_token(token_key),
+            progress=_show_progress,
         )
     except OktaSignInError as error:
         print(f"okta: {error.code}: {error}", file=sys.stderr)
@@ -306,6 +308,12 @@ def _resolve_credentials(
     password = _require_value(password, "Password", secret=True)
     totp_secret = _prompt_optional_value(totp_secret, "TOTP secret")
     return username, password, totp_secret
+
+
+def _show_progress(message: str) -> None:
+    """Sign-in takes a few round trips to Okta; say which one we're on. stderr, so
+    --json output on stdout stays clean."""
+    print(f"okta: {message}...", file=sys.stderr, flush=True)
 
 
 def _warn_ignored(args: argparse.Namespace, *names: str) -> None:

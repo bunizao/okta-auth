@@ -397,3 +397,23 @@ def test_keeps_request_urls_out_of_logs_even_at_debug(caplog: pytest.LogCaptureF
 
     for secret in [PASSWORD, TOTP_SECRET, STATE_TOKEN, "stateToken=", "SAMLRequest="]:
         assert secret not in caplog.text
+
+
+def test_reports_each_step_by_host_without_secrets() -> None:
+    # Python only for now: the TS CLI has no progress output yet.
+    steps: list[str] = []
+    _, run = setup()
+    run(progress=steps.append)
+
+    assert steps == [
+        f"Opening {SP}",
+        f"Signing in at {OKTA}",
+        "Sending the username",
+        "Sending the password",
+        "Choosing the TOTP authenticator",
+        "Sending a TOTP code",
+        f"Posting the SAML response to {SP}",
+        f"Checking that {SP} is signed in",
+    ]
+    for secret in [USERNAME, PASSWORD, TOTP_SECRET, STATE_TOKEN, "?"]:
+        assert not any(secret in step for step in steps)

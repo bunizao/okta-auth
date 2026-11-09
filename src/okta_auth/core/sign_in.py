@@ -13,7 +13,7 @@ from .client import Client, Page
 from .cookies import Cookie
 from .errors import OktaSignInError, where
 from .html import is_login_page, read_saml_form, read_state_token
-from .idx import Credentials, IdxState, Sends, error_keys, next_step
+from .idx import Credentials, IdxState, IdxStep, Sends, error_keys, next_step
 from .totp import base32_decode
 
 
@@ -23,6 +23,15 @@ class SignInResult:
     cookies: list[Cookie]
     # Okta's DT cookie. Store it and pass it back next time.
     device_token: str | None
+
+
+# Reports what sign-in is doing, for people watching a terminal. Messages name hosts
+# and steps, never credentials, tokens or URLs with query strings.
+Progress = Callable[[str], None]
+
+
+def quiet(message: str) -> None:
+    pass
 
 
 MAX_IDX_STEPS = 8
@@ -38,6 +47,7 @@ async def sign_in(
     device_token: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     now: Callable[[], float] = time.time,
+    progress: Progress = quiet,
 ) -> SignInResult:
     """Signs in to a SAML service provider through Okta Identity Engine with plain
     HTTP: no browser. Raises OktaSignInError; see its codes for what's retryable.
@@ -49,6 +59,7 @@ async def sign_in(
         checks and sign-on emails to it.
     transport: an httpx transport, for tests.
     now: seconds since the epoch. Drives TOTP codes and cookie expiry.
+    progress: called with a short message before each step.
     """
     target = _https_url(url)
     # Fail on a malformed secret before anything reaches Okta.
@@ -57,8 +68,10 @@ async def sign_in(
 
     credentials = Credentials(username, password, totp_secret)
     async with Client(transport, now, device_token) as client:
-        acs = await hand_off(client, await client.follow(target), credentials, now)
+        progress(f"Opening {target.host}")
+        acs = await hand_off(client, await client.follow(target), credentials, now, progress)
 
+        progress(f"Checking that {target.host} is signed in")
         # The target must finish with a successful response, without a login form.
         check = await client.follow(target)
         if (
@@ -80,7 +93,11 @@ async def sign_in(
 
 
 async def hand_off(
-    client: Client, page: Page, credentials: Credentials, now: Callable[[], float]
+    client: Client,
+    page: Page,
+    credentials: Credentials,
+    now: Callable[[], float],
+    progress: Progress = quiet,
 ) -> Page:
     """Takes Okta's first page through sign-in (unless Okta already has a session and
     answers with the SAML form) and posts the SAMLResponse to the service
@@ -88,18 +105,25 @@ async def hand_off(
     if page.status >= 400:
         raise http_error(page.status, page.url)
 
-    if not read_saml_form(page.body):
+    if read_saml_form(page.body):
+        progress(f"{page.url.host} already has a session")
+    else:
         state_token = read_state_token(page.body, page.url)
         client.use_idp(page.url.host)
-        page = await _authenticate(client, _origin(page.url), state_token, credentials, now)
+        progress(f"Signing in at {page.url.host}")
+        page = await _authenticate(
+            client, _origin(page.url), state_token, credentials, now, progress
+        )
 
     form = read_saml_form(page.body)
     if not form:
         raise OktaSignInError(
             "unexpected_step", f"Okta finished without a SAML form at {where(page.url)}"
         )
+    acs = page.url.join(form.action)
+    progress(f"Posting the SAML response to {acs.host}")
     return await client.follow(
-        page.url.join(form.action),
+        acs,
         method="POST",
         headers={"content-type": "application/x-www-form-urlencoded"},
         body=urlencode(form.fields),
@@ -118,6 +142,7 @@ async def _authenticate(
     state_token: str,
     credentials: Credentials,
     now: Callable[[], float],
+    progress: Progress,
 ) -> Page:
     """Walks the IDX remediations until Okta reports success, then follows Okta's
     success link to the page carrying the SAML form."""
@@ -134,6 +159,7 @@ async def _authenticate(
                 "unexpected_step", f"Okta still wants more after {MAX_IDX_STEPS} steps"
             )
         step = next_step(state, credentials, now())
+        progress(_describe(step))
         state = await _post(client, _okta_url(step.href, origin), step.body, step.sends)
         steps += 1
 
@@ -174,6 +200,20 @@ async def _post(client: Client, url: httpx.URL, body: dict[str, Any], sends: Sen
     if not response.is_success:
         raise http_error(response.status_code, url, reason)
     raise OktaSignInError("unexpected_step", f"Okta reported an error at {where(url)}{reason}")
+
+
+def _describe(step: IdxStep) -> str:
+    if step.form == "identify":
+        return "Sending the username" + (" and password" if step.sends == "password" else "")
+    if step.sends == "password":
+        return "Sending the password"
+    if step.sends == "passcode":
+        return "Sending a TOTP code"
+    if step.form == "select-authenticator-authenticate":
+        return "Choosing the TOTP authenticator"
+    if step.form == "authenticator-verification-data":
+        return "Asking Okta Verify for a TOTP code"
+    return "Skipping an optional step"
 
 
 def _okta_url(href: str, origin: httpx.URL) -> httpx.URL:
