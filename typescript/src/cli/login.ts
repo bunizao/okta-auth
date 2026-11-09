@@ -17,7 +17,7 @@ export async function signInAndSave(
   fetch?: Fetch,
 ): Promise<{ host: string; cookies: number; file: string }> {
   const result = await signIn({ url, ...credentials, deviceToken: await readDeviceToken(url), onProgress, fetch });
-  const saveUrl = sessionUrl(url, result.cookies);
+  const saveUrl = sessionUrl(url, result.cookies, result.landingUrl);
   const file = await saveSession(saveUrl, result.cookies);
   await saveDeviceToken(url, result.deviceToken);
   return { host: new URL(saveUrl).host, cookies: result.cookies.length, file };

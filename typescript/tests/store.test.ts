@@ -85,8 +85,18 @@ describe("session store", () => {
 
   it("saves an Okta app link's session under the site it landed on", () => {
     const appLink = "https://example.okta.com/app/example_ontrack/exk3/sso/saml";
-    expect(sessionUrl(appLink, [cookie("doubtfire", "ontrack.example.edu")])).toBe("https://ontrack.example.edu/");
-    expect(sessionUrl(URL_A, [cookie("MoodleSession")])).toBe(URL_A);
-    expect(sessionUrl(appLink, [])).toBe(appLink);
+    const landing = "https://ontrack.example.edu/sign_in";
+    expect(sessionUrl(appLink, [cookie("doubtfire", "ontrack.example.edu")], landing)).toBe("https://ontrack.example.edu/");
+    expect(sessionUrl(URL_A, [cookie("MoodleSession")], URL_A)).toBe(URL_A);
+    expect(sessionUrl(appLink, [], appLink)).toBe(appLink);
+  });
+
+  it("keeps the port of an Okta app link's landing site in the session key", async () => {
+    const appLink = "https://example.okta.com/app/example_ontrack/exk3/sso/saml";
+    const url = sessionUrl(appLink, [cookie("doubtfire", "ontrack.example.edu")], "https://ontrack.example.edu:8443/sign_in");
+    expect(url).toBe("https://ontrack.example.edu:8443/");
+
+    await saveSession(url, [cookie("doubtfire", "ontrack.example.edu")]);
+    expect((await readSession("https://ontrack.example.edu:8443/api"))?.cookies.map((c) => c.name)).toEqual(["doubtfire"]);
   });
 });

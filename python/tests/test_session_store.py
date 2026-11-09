@@ -155,6 +155,23 @@ def test_saves_an_okta_app_link_s_session_under_the_site_it_landed_on() -> None:
     doubtfire = Cookie(name="doubtfire", value="x", domain="ontrack.example.edu")
     moodle = Cookie(name="MoodleSession", value="x", domain="learning.example.edu")
 
-    assert session_store.session_url(app_link, [doubtfire]) == "https://ontrack.example.edu/"
-    assert session_store.session_url(url_a, [moodle]) == url_a
-    assert session_store.session_url(app_link, []) == app_link
+    landing = "https://ontrack.example.edu/sign_in"
+    assert (
+        session_store.session_url(app_link, [doubtfire], landing) == "https://ontrack.example.edu/"
+    )
+    assert session_store.session_url(url_a, [moodle], url_a) == url_a
+    assert session_store.session_url(app_link, [], app_link) == app_link
+
+
+def test_keeps_the_port_of_an_okta_app_link_s_landing_site_in_the_session_key() -> None:
+    app_link = "https://example.okta.com/app/example_ontrack/exk3/sso/saml"
+    doubtfire = Cookie(name="doubtfire", value="x", domain="ontrack.example.edu")
+    url = session_store.session_url(
+        app_link, [doubtfire], "https://ontrack.example.edu:8443/sign_in"
+    )
+    assert url == "https://ontrack.example.edu:8443/"
+
+    session_store.save_session(url, [doubtfire])
+    assert [c.name for c in session_store.load_cookies("https://ontrack.example.edu:8443/api")] == [
+        "doubtfire"
+    ]

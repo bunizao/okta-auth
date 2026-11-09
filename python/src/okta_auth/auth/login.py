@@ -54,7 +54,7 @@ async def perform_login(
 
     session_store.save_device_token(url, result.device_token)
     domain_key = session_store.save_session(
-        session_store.session_url(url, result.cookies), result.cookies
+        session_store.session_url(url, result.cookies, result.landing_url), result.cookies
     )
     return {
         "success": True,
