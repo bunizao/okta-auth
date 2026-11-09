@@ -352,6 +352,10 @@ result.okta_session  # Okta's session cookies, without DT
 `sign_in` raises `OktaSignInError` with a `code`, and `ValueError` for bad input.
 It never retries.
 
+`totp_code`, an async function returning the current code, replaces
+`totp_secret` when a password manager holds the secret: it's called only when
+Okta asks for a code.
+
 ### Apps that start at Okta
 
 Some apps (OnTrack, for one) have no page that redirects to Okta: sign-in starts

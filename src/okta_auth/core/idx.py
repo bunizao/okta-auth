@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -17,6 +18,7 @@ class Credentials:
     username: str
     password: str
     totp_secret: str | None = None
+    totp_code: Callable[[], Awaitable[str]] | None = None
 
 
 # What a step sends decides how a rejection is reported.
@@ -37,7 +39,7 @@ TOTP_KEYS = {"google_otp", "okta_verify"}
 PREFERRED_KEYS = [PASSWORD, "google_otp", "okta_verify"]
 
 
-def next_step(state: IdxState, credentials: Credentials, now: float) -> IdxStep:
+async def next_step(state: IdxState, credentials: Credentials, now: float) -> IdxStep:
     """Picks the next IDX remediation to answer and builds its request body."""
     forms = _forms(state)
 
@@ -80,8 +82,7 @@ def next_step(state: IdxState, credentials: Credentials, now: float) -> IdxStep:
         if is_password:
             secret = credentials.password
         else:
-            assert credentials.totp_secret is not None  # _can_answer checked it
-            secret = totp(credentials.totp_secret, now)
+            secret = await _totp_code(credentials, now)
         credentials_field = _field(challenge, "credentials")
         name = _secret_name(credentials_field) if credentials_field else "passcode"
         return IdxStep(
@@ -97,7 +98,7 @@ def next_step(state: IdxState, credentials: Credentials, now: float) -> IdxStep:
                 "mfa_unsupported",
                 f"Okta offers {_describe(options)}; this package answers "
                 f"{', '.join(PREFERRED_KEYS)} (TOTP only)"
-                + ("" if credentials.totp_secret else ", and no TOTP secret was given"),
+                + ("" if _has_totp(credentials) else ", and no TOTP secret was given"),
             )
         authenticator: dict[str, Any] = {"id": choice.id}
         if choice.method_type:
@@ -211,7 +212,19 @@ def _authenticator_options(state: IdxState, form: dict[str, Any]) -> list[_Authe
 def _can_answer(key: str | None, credentials: Credentials) -> bool:
     if key == PASSWORD:
         return True
-    return key is not None and key in TOTP_KEYS and credentials.totp_secret is not None
+    return key is not None and key in TOTP_KEYS and _has_totp(credentials)
+
+
+def _has_totp(credentials: Credentials) -> bool:
+    return credentials.totp_code is not None or credentials.totp_secret is not None
+
+
+async def _totp_code(credentials: Credentials, now: float) -> str:
+    # A caller's code source (a password manager) wins over computing one locally.
+    if credentials.totp_code is not None:
+        return await credentials.totp_code()
+    assert credentials.totp_secret is not None  # _can_answer checked it
+    return totp(credentials.totp_secret, now)
 
 
 def _rank(key: str | None) -> int:

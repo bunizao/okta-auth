@@ -32,7 +32,7 @@ from fake_sso import (
     fake_sso,
     idx_json,
 )
-from okta_auth import OktaSignInError, SignInResult, sign_in
+from okta_auth import OktaSignInError, SignInResult, sign_in, totp
 
 NOW = datetime(2026, 11, 2, 3, 4, 5, tzinfo=timezone.utc).timestamp()
 
@@ -157,6 +157,35 @@ def test_answers_a_pre_selected_google_authenticator_challenge_directly() -> Non
     run()
 
     assert not any(r.url.path == "/idp/idx/challenge" for r in idx_calls(fake.requests))
+
+
+def test_answers_totp_with_a_code_from_totpcode_instead_of_the_secret() -> None:
+    asked: list[float] = []
+
+    async def totp_code() -> str:
+        asked.append(now())
+        return totp(TOTP_SECRET, now())
+
+    fake, run = setup()
+    result = run(totp_secret=None, totp_code=totp_code)
+
+    assert len(asked) == 1
+    assert next(c.value for c in result.cookies if c.name == "MoodleSession") == "authed"
+    assert not any(TOTP_SECRET in r.body for r in fake.requests)
+
+
+def test_never_asks_totpcode_when_okta_already_has_a_session() -> None:
+    asked = 0
+
+    async def totp_code() -> str:
+        nonlocal asked
+        asked += 1
+        return str(asked)
+
+    _, run = setup({"okta_session": True})
+    run(totp_code=totp_code)
+
+    assert asked == 0
 
 
 def test_round_trips_the_device_token_so_okta_sees_the_same_device() -> None:

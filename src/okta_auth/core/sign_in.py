@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -50,6 +50,7 @@ async def sign_in(
     username: str,
     password: str,
     totp_secret: str | None = None,
+    totp_code: Callable[[], Awaitable[str]] | None = None,
     device_token: str | None = None,
     okta_session: list[Cookie] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -64,6 +65,9 @@ async def sign_in(
         e.g. https://example.okta.com/app/example/exk1/sso/saml, for an app whose
         sign-in starts at Okta (IdP-initiated SAML).
     totp_secret: base32 secret of a Google Authenticator (or Okta Verify TOTP) enrollment.
+    totp_code: returns the current TOTP code, called only when Okta asks for one. Use
+        it instead of totp_secret when a password manager holds the secret and hands
+        out codes (1Password: `op read "op://…?attribute=otp"`). Wins over totp_secret.
     device_token: the `device_token` from an earlier sign-in. Okta keys "new device"
         checks and sign-on emails to it.
     okta_session: `okta_session` from an earlier result. While that session lasts,
@@ -77,7 +81,7 @@ async def sign_in(
     if totp_secret is not None:
         base32_decode(totp_secret)
 
-    credentials = Credentials(username, password, totp_secret)
+    credentials = Credentials(username, password, totp_secret, totp_code)
     async with Client(transport, now, device_token) as client:
         for cookie in okta_session or []:
             client.jar.set(cookie)
@@ -202,7 +206,7 @@ async def _authenticate(
             raise OktaSignInError(
                 "unexpected_step", f"Okta still wants more after {MAX_IDX_STEPS} steps"
             )
-        step = next_step(state, credentials, now())
+        step = await next_step(state, credentials, now())
         progress(_describe(step))
         state = await _post(client, _okta_url(step.href, origin), step.body, step.sends)
         steps += 1

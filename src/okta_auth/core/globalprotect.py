@@ -4,7 +4,7 @@ import base64
 import binascii
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlencode
@@ -68,6 +68,7 @@ async def sign_in_globalprotect(
     password: str,
     interface: GlobalProtectInterface | None = None,
     totp_secret: str | None = None,
+    totp_code: Callable[[], Awaitable[str]] | None = None,
     device_token: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     now: Callable[[], float] = time.time,
@@ -90,7 +91,7 @@ async def sign_in_globalprotect(
     if totp_secret is not None:
         base32_decode(totp_secret)
 
-    credentials = Credentials(username, password, totp_secret)
+    credentials = Credentials(username, password, totp_secret, totp_code)
     async with Client(transport, now, device_token) as client:
         interfaces: list[GlobalProtectInterface] = (
             [interface] if interface else ["gateway", "portal"]
