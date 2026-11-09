@@ -1,7 +1,8 @@
 import { totp } from "../src/totp.js";
 
 // A scripted Okta Identity Engine org (example.okta.com), a Moodle-like SAML
-// service provider (learning.example.edu) and a GlobalProtect portal
+// service provider (learning.example.edu), an OnTrack-like app that starts
+// sign-in at Okta (ontrack.example.edu) and a GlobalProtect portal
 // (vpn.example.edu), served through a fake fetch.
 
 export const SP = "learning.example.edu";
@@ -14,12 +15,19 @@ export const STATE_TOKEN = "02.id.abc-def";
 export const SAML_RESPONSE = "PHNhbWw+";
 export const GP = "vpn.example.edu";
 export const GP_COOKIE = "gp-cookie-1";
+export const ONTRACK = "ontrack.example.edu";
+// OnTrack's sign-in starts at this Okta app link (IdP-initiated SAML).
+export const ONTRACK_APP = `https://${OKTA}/app/example_ontrack/exk3/sso/saml`;
+export const ONTRACK_AUTH_TOKEN = "one-time-1";
+export const ONTRACK_LANDING = `https://${ONTRACK}/sign_in?authToken=${ONTRACK_AUTH_TOKEN}&username=student`;
 
 const RELAY_STATE = `https://${SP}/my/`;
 const IDX = "application/ion+json; okta-version=1.0.0";
 const APP_PATH = "/app/example_moodle/exk1/sso/saml";
 const ACS_PATH = `/auth/saml2/sp/saml2-acs.php/${SP}`;
 const GP_APP_PATH = "/app/example_gp/exk2/sso/saml";
+const ONTRACK_APP_PATH = new URL(ONTRACK_APP).pathname;
+const ONTRACK_ACS_PATH = "/api/auth/jwt";
 const GP_ACS_PATH = "/SAML20/SP/ACS";
 const GP_RELAY_STATE = "gp-relay";
 const PRELOGIN_PATHS = { gateway: "/ssl-vpn/prelogin.esp", portal: "/global-protect/prelogin.esp" } as const;
@@ -115,7 +123,20 @@ export function fakeSso(options: FakeOptions) {
     if (request.url.hostname === SP) return serviceProvider(request);
     if (request.url.hostname === OKTA) return okta(request);
     if (request.url.hostname === GP) return globalProtect(request);
+    if (request.url.hostname === ONTRACK) return onTrack(request);
     return new Response("unknown host", { status: 502 });
+  }
+
+  // Doubtfire takes the SAML response at its API and sends the browser to the
+  // SPA with a one-time token in the query, which the SPA would then spend.
+  function onTrack({ method, url, body }: RecordedRequest): Response {
+    if (method === "POST" && url.pathname === ONTRACK_ACS_PATH) {
+      const accepted = !options.spRejects && new URLSearchParams(body).get("SAMLResponse") === SAML_RESPONSE;
+      if (!accepted) return new Response("unauthorized", { status: 401 });
+      return redirect(ONTRACK_LANDING, ["doubtfire=anon; Path=/; Secure; HttpOnly"]);
+    }
+    if (method === "GET" && url.pathname === "/sign_in") return html("<app-root></app-root>");
+    return new Response("not found", { status: 404 });
   }
 
   function serviceProvider({ method, url, cookies, body }: RecordedRequest): Response {
@@ -158,13 +179,14 @@ export function fakeSso(options: FakeOptions) {
     if (!cookies.has("JSESSIONID")) cookieLines.push("JSESSIONID=j-1; Path=/; Secure; HttpOnly");
     const hasSession = options.oktaSession || cookies.get("sid") === "okta-session";
 
-    if ((method === "GET" && url.pathname === APP_PATH) || url.pathname === GP_APP_PATH) {
+    const appLink = method === "GET" && (url.pathname === APP_PATH || url.pathname === ONTRACK_APP_PATH);
+    if (appLink || url.pathname === GP_APP_PATH) {
       if (url.pathname === GP_APP_PATH) {
         const samlRequest = method === "POST" ? new URLSearchParams(request.body).get("SAMLRequest") : null;
         if (method === "POST" && samlRequest !== "gprequest") return new Response("bad request", { status: 400 });
       }
       appPath = url.pathname;
-      if (hasSession) return html(appPath === GP_APP_PATH ? gpSamlFormPage() : samlFormPage(), cookieLines);
+      if (hasSession) return html(samlFormFor(appPath), cookieLines);
       return html(`<script>var stateToken = '02.id.abc\\x2Ddef';</script>`, cookieLines);
     }
     if (method === "GET" && url.pathname === "/login/token/redirect") {
@@ -285,6 +307,20 @@ export function samlFormPage(): string {
 <form id="appForm" action="${entities(`https://${SP}${ACS_PATH}`)}" method="POST">
 <input name="SAMLResponse" type="hidden" value="${entities(SAML_RESPONSE)}"/>
 <input name="RelayState" type="hidden" value="${entities(RELAY_STATE)}"/>
+</form></body></html>`;
+}
+
+function samlFormFor(appPath: string): string {
+  if (appPath === GP_APP_PATH) return gpSamlFormPage();
+  if (appPath === ONTRACK_APP_PATH) return ontrackSamlFormPage();
+  return samlFormPage();
+}
+
+// IdP-initiated: no RelayState, nothing for the app to match a request against.
+export function ontrackSamlFormPage(): string {
+  return `<html><body onload="document.forms[0].submit()">
+<form id="appForm" action="https://${ONTRACK}${ONTRACK_ACS_PATH}" method="POST">
+<input name="SAMLResponse" type="hidden" value="${SAML_RESPONSE}"/>
 </form></body></html>`;
 }
 

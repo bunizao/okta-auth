@@ -3,6 +3,10 @@ import { OktaSignInError, signIn, type SignInOptions } from "../src/index.js";
 import {
   fakeSso,
   OKTA,
+  ONTRACK,
+  ONTRACK_APP,
+  ONTRACK_AUTH_TOKEN,
+  ONTRACK_LANDING,
   PASSWORD,
   SP,
   STATE_TOKEN,
@@ -46,7 +50,8 @@ async function rejection(promise: Promise<unknown>): Promise<OktaSignInError> {
 
 function expectNoSecrets(error: Error) {
   const text = `${error.message} ${error.stack ?? ""}`;
-  for (const secret of [PASSWORD, TOTP_SECRET, STATE_TOKEN, "02.id.abc", "ssp-1", "j-1", "dt-1", "SAMLRequest=request"]) {
+  const secrets = [PASSWORD, TOTP_SECRET, STATE_TOKEN, "02.id.abc", "ssp-1", "j-1", "dt-1", "SAMLRequest=request"];
+  for (const secret of [...secrets, ONTRACK_AUTH_TOKEN, "okta-session"]) {
     expect(text).not.toContain(secret);
   }
 }
@@ -184,6 +189,61 @@ describe("signIn", () => {
 
     expect(idxCalls(fake.requests)).toEqual([]);
     expect(result.cookies.find((cookie) => cookie.name === "MoodleSession")?.value).toBe("authed");
+  });
+
+  it("returns where the SAML post landed", async () => {
+    const { run } = setup();
+    expect((await run()).landingUrl).toBe(`https://${SP}/my/`);
+  });
+
+  it("starts at an Okta app link and returns the app's landing URL and cookies", async () => {
+    const { fake, run } = setup();
+    const result = await run({ url: ONTRACK_APP });
+
+    expect(result.landingUrl).toBe(ONTRACK_LANDING);
+    expect(result.cookies.map(({ name, domain }) => ({ name, domain }))).toEqual([{ name: "doubtfire", domain: ONTRACK }]);
+    expect(idxCalls(fake.requests).length).toBe(5);
+    expect(fake.requests.some((request) => request.url.hostname === SP)).toBe(false);
+  });
+
+  it("sends the device token to Okta on an Okta app link", async () => {
+    const { fake, run } = setup();
+    await run({ url: ONTRACK_APP, deviceToken: "dt-known" });
+
+    for (const request of idxCalls(fake.requests)) expect(request.cookies.get("DT")).toBe("dt-known");
+    expect(fake.requests.filter((request) => request.url.hostname === ONTRACK).every((request) => !request.cookies.has("DT")))
+      .toBe(true);
+  });
+
+  it("reports handoff_failed when the app behind an Okta app link refuses the SAML post", async () => {
+    const { run } = setup({ spRejects: true });
+    const error = await rejection(run({ url: ONTRACK_APP }));
+
+    expect(error.code).toBe("handoff_failed");
+    expect(error.message).toContain(ONTRACK);
+    expectNoSecrets(error);
+  });
+
+  it("returns Okta's session cookies, without the device token", async () => {
+    const { run } = setup();
+    const { oktaSession } = await run();
+
+    expect(oktaSession.map(({ name, domain }) => ({ name, domain }))).toEqual([
+      { name: "JSESSIONID", domain: OKTA },
+      { name: "sid", domain: OKTA },
+    ]);
+  });
+
+  it("reuses an Okta session to sign in to a second app without MFA", async () => {
+    const { fake, run } = setup();
+    const first = await run();
+    const answered = idxCalls(fake.requests).length;
+    const second = await run({ url: ONTRACK_APP, oktaSession: first.oktaSession });
+
+    expect(idxCalls(fake.requests).length).toBe(answered);
+    expect(second.landingUrl).toBe(ONTRACK_LANDING);
+    const leaked = fake.requests.filter((request) => request.url.hostname !== OKTA && request.cookies.has("sid"));
+    expect(leaked).toEqual([]);
   });
 
   it("reports handoff_failed when the service provider rejects the SAML response", async () => {

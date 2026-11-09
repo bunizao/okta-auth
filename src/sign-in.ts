@@ -7,7 +7,9 @@ import { base32Decode } from "./totp.js";
 
 export interface SignInOptions {
   // A page on the target site that sends signed-out visitors to Okta,
-  // e.g. https://learning.monash.edu/login/index.php
+  // e.g. https://learning.monash.edu/login/index.php. Or an Okta app link,
+  // e.g. https://example.okta.com/app/example/exk1/sso/saml, for an app whose
+  // sign-in starts at Okta (IdP-initiated SAML).
   url: string;
   username: string;
   password: string;
@@ -16,16 +18,26 @@ export interface SignInOptions {
   // The `deviceToken` from an earlier sign-in. Okta keys "new device" checks
   // and sign-on emails to it.
   deviceToken?: string;
+  // `oktaSession` from an earlier result. While that session lasts, Okta skips
+  // the password and one-time code. Each cookie only goes to its own host.
+  oktaSession?: Cookie[];
   fetch?: Fetch;
   // Milliseconds since the epoch. Drives TOTP codes and cookie expiry.
   now?: () => number;
 }
 
 export interface SignInResult {
-  // Cookies the target site set, and only those.
+  // Cookies the target site set, and only those. For an Okta app link, the
+  // cookies of the site the SAML post landed on.
   cookies: Cookie[];
   // Okta's DT cookie. Store it and pass it back next time.
   deviceToken: string | undefined;
+  // Where the SAML post landed, redirects followed. It can carry one-time
+  // tokens (OnTrack's authToken): read it, never log it.
+  landingUrl: string;
+  // Okta's session cookies, without DT. Pass them back as `oktaSession` to sign
+  // in to another app without answering MFA again.
+  oktaSession: Cookie[];
 }
 
 const MAX_IDX_STEPS = 8;
@@ -41,8 +53,26 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
 
   const now = options.now ?? Date.now;
   const client = new Client(options.fetch ?? ((input, init) => fetch(input, init)), now, options.deviceToken);
+  for (const cookie of options.oktaSession ?? []) client.jar.set(cookie);
 
   const acs = await handOff(client, await client.follow(target), options, now);
+  const signedIn = {
+    deviceToken: deviceTokenOf(client, options.deviceToken),
+    landingUrl: acs.url.href,
+    oktaSession: client.idpHost ? client.jar.list(client.idpHost).filter((cookie) => cookie.name !== "DT") : [],
+  };
+
+  // An Okta app link: the app has no page of its own to ask again, so where the
+  // SAML post landed is the only evidence.
+  if (client.idpHost === target.hostname) {
+    if (!landedInApp(acs, target.hostname)) {
+      throw new OktaSignInError(
+        "handoff_failed",
+        `${where(target)} led to ${where(acs.url)} (${acs.status}) instead of the app after the SAML post`,
+      );
+    }
+    return { cookies: client.jar.list(acs.url.hostname), ...signedIn };
+  }
 
   // The target must finish with a successful response, without a login form.
   const check = await client.follow(target);
@@ -54,10 +84,17 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
     );
   }
 
-  return {
-    cookies: client.jar.list(target.hostname),
-    deviceToken: deviceTokenOf(client, options.deviceToken),
-  };
+  return { cookies: client.jar.list(target.hostname), ...signedIn };
+}
+
+// Whether an IdP-initiated sign-in reached the app, judged only by the page the
+// SAML post ended on (redirects already followed). `oktaHost` is the Okta host
+// the sign-in started at.
+function landedInApp(landing: Page, oktaHost: string): boolean {
+  // Back at Okta means the app refused the response and sent us round again.
+  if (landing.url.hostname === oktaHost) return false;
+  // Same bar as the SP-initiated check: a 2xx page that is not a login form.
+  return landing.status >= 200 && landing.status < 300 && !isLoginPage(landing.body);
 }
 
 // Takes Okta's first page through sign-in (unless Okta already has a session and
@@ -70,6 +107,9 @@ export async function handOff(client: Client, page: Page, credentials: Credentia
     const stateToken = readStateToken(page.body, page.url);
     client.useIdp(page.url.hostname);
     page = await authenticate(client, page.url.origin, stateToken, credentials, now);
+  } else {
+    // Okta already had a session and answered with the SAML form straight away.
+    client.useIdp(page.url.hostname);
   }
 
   const form = readSamlForm(page.body);

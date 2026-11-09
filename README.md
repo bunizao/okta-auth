@@ -41,11 +41,12 @@ if (deviceToken) await storage.put("okta-device-token", deviceToken);
 function signIn(options: SignInOptions): Promise<SignInResult>;
 
 interface SignInOptions {
-  url: string;              // https page that sends signed-out visitors to Okta
+  url: string;              // https page that sends signed-out visitors to Okta, or an Okta app link
   username: string;
   password: string;
   totpSecret?: string;      // base32, as shown when enrolling Google Authenticator
   deviceToken?: string;     // from a previous SignInResult
+  oktaSession?: Cookie[];   // from a previous SignInResult; skips MFA while it lasts
   fetch?: (input: string, init: RequestInit) => Promise<Response>;
   now?: () => number;       // ms since epoch; drives TOTP and cookie expiry
 }
@@ -53,6 +54,8 @@ interface SignInOptions {
 interface SignInResult {
   cookies: Cookie[];               // the target host's cookies, and only those
   deviceToken: string | undefined; // Okta's DT cookie
+  landingUrl: string;              // where the SAML post landed; may carry one-time tokens
+  oktaSession: Cookie[];           // Okta's session cookies, without DT
 }
 
 interface Cookie {
@@ -98,6 +101,27 @@ state tokens or cookie values.
 Okta sets a long-lived `DT` cookie to recognise a device. A sign-in without it
 looks like a new device, and orgs with sign-on notifications email the user
 every time. Store `deviceToken` and pass it back. It goes only to the Okta host.
+
+### Apps that start at Okta
+
+Some apps (OnTrack, for one) have no page that redirects to Okta: sign-in starts
+at the Okta app link, `https://<org>.okta.com/app/<name>/<id>/sso/saml`, and
+the app hands back a one-time token in the URL it redirects to. Pass the app link
+as `url`. `signIn` then succeeds when the SAML post leaves Okta and ends on a
+2xx page that is not a login form, returns that site's cookies, and puts the
+final URL in `landingUrl`. Read the token from there; never log it.
+
+### Several apps, one MFA answer
+
+Pass `oktaSession` from one result into the next `signIn` and Okta skips the
+password and one-time code while its session lasts. Without it, two sign-ins
+inside the same 30-second window would send the same TOTP code twice, and Okta
+refuses a reused code with `passcode_rejected`.
+
+```ts
+const moodle = await signIn({ url: moodleLogin, ...credentials, deviceToken });
+const ontrack = await signIn({ url: ontrackAppLink, ...credentials, deviceToken, oktaSession: moodle.oktaSession });
+```
 
 ### GlobalProtect
 
