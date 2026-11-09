@@ -35,7 +35,7 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bunizao/okta-auth"
+Homepage = "https://github.com/bunizao/okta-auth/tree/main/python"
 Issues = "https://github.com/bunizao/okta-auth/issues"
 
 [project.scripts]

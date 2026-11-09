@@ -4,89 +4,42 @@ Guidance for coding agents working in this repository.
 
 ## Project
 
-okta-auth (PyPI: `okta-auth-cli`) signs in to SAML apps and GlobalProtect
-portals behind Okta Identity Engine over plain HTTP. `okta_auth.core` is the
-protocol; the `okta` CLI, the `okta-auth` MCP server and `adapter.py` sit on top.
-
-## Reference implementation
-
-The TypeScript package (`okta-auth-cli` on npm, branch `feat/typescript-rewrite`
-of this repository, `src/*.ts`) is the reference. `okta_auth.core` mirrors it
-module for module. Protocol fixes land in both in the same release, with a
-test of the same case name in each.
-
-| TypeScript              | Python                              |
-|-------------------------|-------------------------------------|
-| `src/sign-in.ts`        | `src/okta_auth/core/sign_in.py`     |
-| `src/globalprotect.ts`  | `src/okta_auth/core/globalprotect.py` |
-| `src/idx.ts`            | `src/okta_auth/core/idx.py`         |
-| `src/client.ts`         | `src/okta_auth/core/client.py`      |
-| `src/cookies.ts`        | `src/okta_auth/core/cookies.py`     |
-| `src/html.ts`           | `src/okta_auth/core/html.py`        |
-| `src/totp.ts`           | `src/okta_auth/core/totp.py`        |
-| `src/errors.ts`         | `src/okta_auth/core/errors.py`      |
-| `tests/fake-sso.ts`     | `tests/fake_sso.py`                 |
-| `tests/<name>.test.ts`  | `tests/test_<name>.py`              |
-
-Test names are the TypeScript case names, lowercased, with every run of other
-characters replaced by `_`: "skips IDX when Okta already has a session" becomes
-`test_skips_idx_when_okta_already_has_a_session`.
-
-Deliberate differences:
-
-- `now` returns seconds (TS: milliseconds).
-- Bad input raises `ValueError` (TS: `TypeError`).
-- `totp()` is synchronous (TS: async, because WebCrypto is).
-- Names are snake_case: `device_token`, `totp_secret`, `cookie_name`, `http_only`.
-- Tests inject an `httpx` transport (`transport=`) instead of `fetch`.
-
-## Commands
-
-```bash
-uv venv && source .venv/bin/activate
-uv pip install -e '.[dev]'
-
-ruff format --check .
-ruff check .
-mypy
-pytest
-```
-
-## Layout
+okta-auth signs in to SAML apps and GlobalProtect portals behind Okta Identity
+Engine over plain HTTP. It ships as two packages, both named `okta-auth-cli`:
 
 ```
-src/okta_auth/
-├── core/           # the protocol; mirrors the TS core (table above)
-├── auth/
-│   ├── login.py          # perform_login / verify_session: core + session store
-│   └── session_store.py  # ~/.okta-auth/sessions/<host>.json (0600), device-tokens.json
-├── cli.py          # okta: login, check, list, delete, cookies, config, globalprotect
-├── server.py       # okta-auth: FastMCP stdio server
-├── adapter.py      # ensure_login / get_cookies for other Python packages
-└── log.py          # stderr only
-tests/
-├── fake_sso.py     # scripted fake Okta org, SAML SP and GlobalProtect portal (httpx.MockTransport)
-└── test_*.py
+typescript/   # npm. The reference: the core runs in Node 22+, Bun and Cloudflare Workers
+python/       # PyPI. okta_auth.core mirrors typescript/src module for module
 ```
 
-## Rules
+Each folder has its own AGENTS.md with commands, layout and package rules. Read
+the one for the package you touch.
 
-- `core` uses httpx with `follow_redirects=False` and its own host-only cookie
-  jar; httpx's jar stays disabled. HTTPS only, with timeouts. Stdlib for TOTP.
+## Rules for both packages
+
 - Error messages and logs never contain passwords, one-time codes, the TOTP
   secret, state tokens, query strings or cookie values. Use `where(url)` for
-  locations, and `raise ... from None` when wrapping httpx errors (their
-  messages carry full URLs). Tests assert this.
-- `sign_in` never retries. A `credentials_rejected` retry can lock the account;
-  the CLI exits 77 instead.
+  locations. Tests assert this.
+- Sign-in never retries. A `credentials_rejected` retry can lock the account;
+  both CLIs exit 77 instead.
 - Credentials only go to the Okta host that served the sign-in page; cookies
   only to the host that set them.
-- New IDX behaviour gets a scripted case in `tests/fake_sso.py` and a test,
-  ported from (or to) the TS repo under the same name.
+- New IDX behaviour gets a scripted case in each fake SSO
+  (`typescript/tests/fake-sso.ts`, `python/tests/fake_sso.py`) and a test of
+  the same case name in each.
+- A protocol fix lands in both packages in the same PR.
 - Never sign in to a real Okta org from tests or scripts.
-- Logs go to stderr. stdout is the MCP JSON-RPC channel.
+- `setup.html` is one page served by both CLIs; the two copies must stay
+  identical (a Python test checks).
+
+## Releases
+
+Each package is versioned and released on its own. Bump the version in
+`python/pyproject.toml` or `typescript/package.json`, then push a tag:
+`py-vX.Y.Z` publishes to PyPI, `ts-vX.Y.Z` to npm. A pre-release version
+(`0.3.0rc1`, `0.3.0-rc.0`) stays off the default install on both registries.
 
 ## Code style
 
-Ruff (line length 100, rules E, F, I, B), mypy over `src`, English comments,
-Conventional Commits.
+English comments, Conventional Commits. Scope commits by package when only one
+changes, e.g. `fix(py): ...`, `feat(ts): ...`.

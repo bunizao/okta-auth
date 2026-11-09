@@ -4,9 +4,9 @@
 
 ## Validation
 
-- [ ] `ruff format --check .`
-- [ ] `ruff check .`
-- [ ] `pytest`
+- [ ] Python: `cd python && ruff format --check . && ruff check . && pytest`
+- [ ] TypeScript: `cd typescript && npm run check && npm test`
+- [ ] A protocol fix lands in both packages, with a test of the same case name in each
 
 ## Security
 

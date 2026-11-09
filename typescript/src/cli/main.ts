@@ -1,0 +1,247 @@
+#!/usr/bin/env node
+import { readFile } from "node:fs/promises";
+import { parseArgs } from "node:util";
+import { OktaSignInError, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
+import { readCredentials, readCredentialsFromStdin, totpFrom1Password } from "./credentials.js";
+import { EXPORT_FLAG, exportJson, exportRefusal } from "./export.js";
+import { signInAndSave } from "./login.js";
+import { openBrowser, startSetup } from "./setup.js";
+import {
+  cookieHeader,
+  deleteSessions,
+  listSessions,
+  readDeviceToken,
+  readSession,
+  saveDeviceToken,
+} from "./store.js";
+
+const USAGE = `Usage: okta-auth <command> [--json]
+
+Commands:
+  setup           Open a page in your browser that sets up credentials
+                  (1Password or the Keychain) and tries a sign-in
+  login <url>     Sign in through Okta and save the cookies <url>'s site sets
+  status          List saved sessions
+  cookies <url>   Print the saved cookies as a Cookie header (--json: full list)
+  logout [url]    Delete the saved session for <url>, or every session
+  globalprotect <server> [--interface gateway|portal]
+                  Sign in to a GlobalProtect portal or gateway and print the
+                  one-time cookie for OpenConnect as JSON
+  export --dangerously-print-password-and-totp-secret
+                  Print OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET as
+                  JSON for a program that signs in by itself, e.g.
+                  | npx wrangler secret bulk. Refuses to print to a terminal.
+
+Credentials come from OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET, or else
+from where \`okta-auth setup\` (or the Python \`okta setup\`) put them: 1Password
+references in ~/.okta-auth/op.env, or the macOS Keychain under service
+"okta-auth". Any value may be an op:// reference. With 1Password, sign-in asks
+it for the current TOTP code and the secret stays there. With
+--credentials-stdin they come only from stdin instead, as
+{"username": ..., "password": ..., "totp_secret": ...}.
+
+Exits 77 when Okta rejects the username or password: don't retry, the account
+locks after a few attempts. Any other failure exits 1.
+
+Sessions live in ~/.okta-auth/sessions (mode 0600).`;
+
+async function main(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      json: { type: "boolean", default: false },
+      interface: { type: "string" },
+      "credentials-stdin": { type: "boolean", default: false },
+      [EXPORT_FLAG]: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false },
+      version: { type: "boolean", short: "v", default: false },
+    },
+  });
+  const [command, url] = positionals;
+  const json = values.json;
+  const fromStdin = values["credentials-stdin"];
+
+  if (values.version) {
+    const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
+    console.log(manifest.version);
+    return 0;
+  }
+  if (values.help || !command) {
+    console.log(USAGE);
+    return values.help ? 0 : 1;
+  }
+
+  switch (command) {
+    case "login":
+      return login(requireUrl(url), json, fromStdin);
+    case "status":
+      return status(json);
+    case "cookies":
+      return cookies(requireUrl(url), json);
+    case "logout":
+      return logout(url, json);
+    case "globalprotect":
+      return globalProtect(url, values.interface, fromStdin);
+    case "setup":
+      return setup();
+    case "export":
+      return exportCredentials(values[EXPORT_FLAG] === true);
+    default:
+      console.error(`okta-auth: unknown command "${command}"\n\n${USAGE}`);
+      return 1;
+  }
+}
+
+async function login(url: string, json: boolean, fromStdin: boolean): Promise<number> {
+  const credentials = await requireCredentials(fromStdin);
+  if (!credentials) return 1;
+
+  const { host, cookies, file } = await signInAndSave(url, credentials, showProgress);
+  if (json) console.log(JSON.stringify({ host, cookies, file }, null, 2));
+  else console.log(`Signed in to ${host}; saved ${cookies} cookies to ${file}`);
+  return 0;
+}
+
+// Always JSON: the output is for a script that hands `cookie` to OpenConnect on
+// stdin. Nothing is saved; the cookie works once.
+async function globalProtect(server: string | undefined, iface: string | undefined, fromStdin: boolean): Promise<number> {
+  if (!server) throw new TypeError("this command needs a server, e.g. vpn.gp.monash.edu");
+  if (iface !== undefined && iface !== "gateway" && iface !== "portal") {
+    throw new TypeError('--interface must be "gateway" or "portal"');
+  }
+  const credentials = await requireCredentials(fromStdin);
+  if (!credentials) return 1;
+
+  const tokenKey = `https://${server}/`;
+  const result = await signInGlobalProtect({
+    server,
+    interface: iface as GlobalProtectInterface | undefined,
+    ...credentials,
+    deviceToken: await readDeviceToken(tokenKey),
+    onProgress: showProgress,
+  });
+  await saveDeviceToken(tokenKey, result.deviceToken);
+
+  const { deviceToken: _, ...output } = result;
+  console.log(JSON.stringify({ server, ...output }, null, 2));
+  return 0;
+}
+
+async function setup(): Promise<number> {
+  const server = await startSetup();
+  console.error(`okta-auth: setup is open in your browser. If it isn't, visit:\n  ${server.url}`);
+  openBrowser(server.url);
+  await server.done;
+  server.close();
+  console.error("okta-auth: setup finished");
+  return 0;
+}
+
+async function exportCredentials(confirmed: boolean): Promise<number> {
+  const refusal = exportRefusal(confirmed, process.stdout.isTTY === true);
+  if (refusal) {
+    console.error(`okta-auth: ${refusal}`);
+    return 1;
+  }
+  const output = exportJson(await readCredentials({ onProgress: showProgress, totpSecret: true }));
+  if (!output) {
+    console.error("okta-auth: no username or password to export. Run `okta-auth setup` first.");
+    return 1;
+  }
+  console.log(output);
+  return 0;
+}
+
+// Sign-in takes a few round trips to Okta; say which one we're on. stderr, so
+// JSON output on stdout stays clean.
+function showProgress(message: string): void {
+  console.error(`okta-auth: ${message}...`);
+}
+
+interface SignInCredentials {
+  username: string;
+  password: string;
+  totpSecret?: string;
+  totpCode?: () => Promise<string>;
+}
+
+async function requireCredentials(fromStdin: boolean): Promise<SignInCredentials | undefined> {
+  const { username, password, totpSecret, totpRef } = await (fromStdin
+    ? readCredentialsFromStdin()
+    : readCredentials({ onProgress: showProgress }));
+  if (username && password) {
+    return { username, password, totpSecret, ...(totpRef && { totpCode: totpFrom1Password(totpRef, showProgress) }) };
+  }
+  if (fromStdin) {
+    console.error("okta-auth: the JSON on stdin has no username or password");
+    return undefined;
+  }
+  console.error(
+    "okta-auth: no credentials. Run `okta-auth setup`, or set OKTA_USERNAME and OKTA_PASSWORD " +
+      "(and OKTA_TOTP_SECRET); see `okta-auth --help`.",
+  );
+  return undefined;
+}
+
+async function status(json: boolean): Promise<number> {
+  const sessions = await listSessions();
+  if (json) {
+    const rows = sessions.map(({ url, savedAt, cookies, file }) => ({ url, savedAt, cookies: cookies.length, file }));
+    console.log(JSON.stringify(rows, null, 2));
+  } else if (!sessions.length) {
+    console.log("No saved sessions.");
+  } else {
+    for (const session of sessions) {
+      const saved = session.savedAt ? `saved ${session.savedAt}` : "saved by an older version";
+      console.log(`${new URL(session.url).host}  ${saved}  ${session.cookies.length} cookies`);
+    }
+  }
+  return 0;
+}
+
+async function cookies(url: string, json: boolean): Promise<number> {
+  const session = await readSession(url);
+  const header = session ? cookieHeader(url, session.cookies) : undefined;
+  if (!session?.cookies.length || (!json && !header)) {
+    console.error(`okta-auth: no saved cookies for ${new URL(url).host}. Run: okta-auth login ${url}`);
+    return 1;
+  }
+  if (json) console.log(JSON.stringify(session.cookies, null, 2));
+  else console.log(header);
+  return 0;
+}
+
+async function logout(url: string | undefined, json: boolean): Promise<number> {
+  const removed = await deleteSessions(url === undefined ? undefined : checkUrl(url));
+  const hosts = removed.map((session) => new URL(session.url).host);
+  if (json) console.log(JSON.stringify({ removed: hosts }, null, 2));
+  else if (!hosts.length) console.log(url ? `No saved session for ${new URL(url).host}.` : "No saved sessions.");
+  else console.log(`Removed ${hosts.length === 1 ? "the session" : `${hosts.length} sessions`}: ${hosts.join(", ")}`);
+  return 0;
+}
+
+function requireUrl(url: string | undefined): string {
+  if (!url) throw new TypeError("this command needs a URL, e.g. https://learning.monash.edu/login/index.php");
+  return checkUrl(url);
+}
+
+function checkUrl(url: string): string {
+  if (!URL.canParse(url)) throw new TypeError(`not a URL: ${url}`);
+  return url;
+}
+
+main(process.argv.slice(2)).then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (error: unknown) => {
+    if (error instanceof OktaSignInError) {
+      console.error(`okta-auth: ${error.code}: ${error.message}`);
+    } else {
+      console.error(`okta-auth: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    // 77 (EX_NOPERM) tells a supervising script to stop: a retry can lock the account.
+    process.exitCode = error instanceof OktaSignInError && error.code === "credentials_rejected" ? 77 : 1;
+  },
+);
