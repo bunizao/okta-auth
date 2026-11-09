@@ -242,6 +242,10 @@ describe("signIn", () => {
 
     expect(idxCalls(fake.requests).length).toBe(answered);
     expect(second.landingUrl).toBe(ONTRACK_LANDING);
+    // Okta answered with the SAML form straight away; it is still Okta's page,
+    // so the app's cookies come back, not Okta's.
+    expect(second.cookies.map(({ name, domain }) => ({ name, domain }))).toEqual([{ name: "doubtfire", domain: ONTRACK }]);
+    expect(second.oktaSession.map(({ name }) => name)).toEqual(["JSESSIONID", "sid"]);
     const leaked = fake.requests.filter((request) => request.url.hostname !== OKTA && request.cookies.has("sid"));
     expect(leaked).toEqual([]);
   });
