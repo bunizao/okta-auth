@@ -50,3 +50,12 @@ tests/
   only to the host that set them.
 - New IDX behaviour gets a scripted case in `tests/fake-sso.ts` and a test.
 - Never sign in to a real Okta org from tests or scripts.
+
+## Python port
+
+`okta_auth.core` in the Python package (PyPI `okta-auth-cli`, branch
+`feat/pure-http-sign-in`) mirrors `src/*.ts` module for module. This package is
+the reference: protocol fixes land in both in the same release, with a test of
+the same case name in each (Python lowercases the name and joins words with
+`_`). The Python AGENTS.md lists the deliberate differences (seconds instead of
+milliseconds, `ValueError`, sync `totp`, snake_case).
