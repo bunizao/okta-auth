@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
 import { readCredentials, readCredentialsFromStdin, totpFrom1Password } from "./credentials.js";
+import { EXPORT_FLAG, exportJson, exportRefusal } from "./export.js";
 import {
   cookieHeader,
   deleteSessions,
@@ -24,11 +25,18 @@ Commands:
   globalprotect <server> [--interface gateway|portal]
                   Sign in to a GlobalProtect portal or gateway and print the
                   one-time cookie for OpenConnect as JSON
+  export --dangerously-print-password-and-totp-secret
+                  Print OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET as
+                  JSON for a program that signs in by itself, e.g.
+                  | npx wrangler secret bulk. Refuses to print to a terminal.
 
 Credentials come from OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET, or else
-from the macOS Keychain: service "okta-auth", accounts "username", "password"
-and "totp_secret". With --credentials-stdin they come only from stdin instead,
-as {"username": ..., "password": ..., "totp_secret": ...}.
+from where \`okta-auth setup\` (or the Python \`okta setup\`) put them: 1Password
+references in ~/.okta-auth/op.env, or the macOS Keychain under service
+"okta-auth". Any value may be an op:// reference. With 1Password, sign-in asks
+it for the current TOTP code and the secret stays there. With
+--credentials-stdin they come only from stdin instead, as
+{"username": ..., "password": ..., "totp_secret": ...}.
 
 Exits 77 when Okta rejects the username or password: don't retry, the account
 locks after a few attempts. Any other failure exits 1.
@@ -43,6 +51,7 @@ async function main(argv: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       interface: { type: "string" },
       "credentials-stdin": { type: "boolean", default: false },
+      [EXPORT_FLAG]: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", short: "v", default: false },
     },
@@ -72,6 +81,8 @@ async function main(argv: string[]): Promise<number> {
       return logout(url, json);
     case "globalprotect":
       return globalProtect(url, values.interface, fromStdin);
+    case "export":
+      return exportCredentials(values[EXPORT_FLAG] === true);
     default:
       console.error(`okta-auth: unknown command "${command}"\n\n${USAGE}`);
       return 1;
@@ -120,6 +131,21 @@ async function globalProtect(server: string | undefined, iface: string | undefin
 
   const { deviceToken: _, ...output } = result;
   console.log(JSON.stringify({ server, ...output }, null, 2));
+  return 0;
+}
+
+async function exportCredentials(confirmed: boolean): Promise<number> {
+  const refusal = exportRefusal(confirmed, process.stdout.isTTY === true);
+  if (refusal) {
+    console.error(`okta-auth: ${refusal}`);
+    return 1;
+  }
+  const output = exportJson(await readCredentials({ onProgress: showProgress, totpSecret: true }));
+  if (!output) {
+    console.error("okta-auth: no username or password to export. Run `okta-auth setup` first.");
+    return 1;
+  }
+  console.log(output);
   return 0;
 }
 
