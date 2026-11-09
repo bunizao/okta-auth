@@ -247,4 +247,59 @@ describe("signIn", () => {
     await expect(run({ totpSecret: "not base32!" })).rejects.toThrow(TypeError);
     expect(fake.requests).toEqual([]);
   });
+
+  it("preserves SAML posts across same-origin 307 and 308 redirects", async () => {
+    for (const acsRedirect of [307, 308] as const) {
+      const { fake, run } = setup({ acsRedirect });
+      const result = await run();
+      expect(result.cookies.find((cookie) => cookie.name === "MoodleSession")?.value).toBe("authed");
+      const acs = fake.requests.find((request) => request.url.pathname === "/canonical-acs")!;
+      expect(acs.method).toBe("POST");
+      expect(new URLSearchParams(acs.body).has("SAMLResponse")).toBe(true);
+      expect(acs.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+      expect(acs.cookies.get("acs-route")).toBe("canonical");
+    }
+  });
+
+  it("refuses to replay SAML posts across origins", async () => {
+    for (const status of [307, 308]) {
+      const { fake, run } = setup();
+      fake.setOverride((request) => request.url.pathname.includes("saml2-acs.php")
+        ? new Response(null, { status, headers: { location: `https://${SP}:8443/acs?token=private` } })
+        : undefined);
+      const error = await rejection(run());
+      expect(error.code).toBe("unexpected_step");
+      expect(error.message).not.toContain("private");
+      expect(fake.requests.some((request) => request.url.port === "8443")).toBe(false);
+    }
+  });
+
+  it("maps interrupted page and IDX response bodies to network", async () => {
+    for (const path of ["/login/index.php", "/idp/idx/introspect"]) {
+      for (const name of ["TypeError", "TimeoutError"]) {
+        const { fake, run } = setup();
+        fake.setOverride((request) => request.url.pathname === path
+          ? new Response(new ReadableStream({ start(controller) {
+              const error = new Error(`${PASSWORD} ${STATE_TOKEN}`);
+              error.name = name;
+              controller.error(error);
+            } }))
+          : undefined);
+        const error = await rejection(run());
+        expect(error.code).toBe("network");
+        expectNoSecrets(error);
+        expect(fake.requests.filter((request) => request.url.pathname === path)).toHaveLength(1);
+      }
+    }
+  });
+
+  it("reports invalid successful IDX responses as unexpected_step", async () => {
+    for (const body of ["not json", "null", "[]", '"text"']) {
+      const { fake, run } = setup();
+      fake.setOverride((request) => request.url.pathname === "/idp/idx/introspect"
+        ? new Response(body)
+        : undefined);
+      expect((await rejection(run())).code).toBe("unexpected_step");
+    }
+  });
 });

@@ -21,7 +21,7 @@ export class CookieJar {
 
   store(url: URL, headers: Headers): void {
     for (const line of headers.getSetCookie()) {
-      const cookie = parseSetCookie(line, url.hostname, this.now());
+      const cookie = parseSetCookie(line, url, this.now());
       if (cookie) this.set(cookie);
     }
   }
@@ -29,12 +29,13 @@ export class CookieJar {
   set(cookie: Cookie): void {
     const cookies = this.hosts.get(cookie.domain) ?? new Map<string, Cookie>();
     this.hosts.set(cookie.domain, cookies);
-    if (this.isExpired(cookie)) cookies.delete(cookie.name);
-    else cookies.set(cookie.name, cookie);
+    const key = JSON.stringify([cookie.name, cookie.path]);
+    if (this.isExpired(cookie)) cookies.delete(key);
+    else cookies.set(key, cookie);
   }
 
-  get(host: string, name: string): Cookie | undefined {
-    const cookie = this.hosts.get(host)?.get(name);
+  get(host: string, name: string, path = "/"): Cookie | undefined {
+    const cookie = this.hosts.get(host)?.get(JSON.stringify([name, path]));
     return cookie && !this.isExpired(cookie) ? cookie : undefined;
   }
 
@@ -43,7 +44,11 @@ export class CookieJar {
   }
 
   header(url: URL): string | undefined {
-    const pairs = this.list(url.hostname).map((cookie) => `${cookie.name}=${cookie.value}`);
+    const pairs = this.list(url.hostname)
+      .filter((cookie) => url.pathname === cookie.path ||
+        url.pathname.startsWith(cookie.path.endsWith("/") ? cookie.path : `${cookie.path}/`))
+      .sort((a, b) => b.path.length - a.path.length)
+      .map((cookie) => `${cookie.name}=${cookie.value}`);
     return pairs.length ? pairs.join("; ") : undefined;
   }
 
@@ -52,7 +57,7 @@ export class CookieJar {
   }
 }
 
-export function parseSetCookie(line: string, host: string, now: number): Cookie | undefined {
+export function parseSetCookie(line: string, url: URL, now: number): Cookie | undefined {
   const [pair = "", ...attributes] = line.split(";");
   const equals = pair.indexOf("=");
   if (equals <= 0) return undefined;
@@ -60,8 +65,8 @@ export function parseSetCookie(line: string, host: string, now: number): Cookie 
   const cookie: Cookie = {
     name: pair.slice(0, equals).trim(),
     value: pair.slice(equals + 1).trim(),
-    domain: host,
-    path: "/",
+    domain: url.hostname,
+    path: url.pathname.slice(0, url.pathname.lastIndexOf("/")) || "/",
     secure: false,
     httpOnly: false,
   };

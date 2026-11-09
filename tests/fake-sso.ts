@@ -43,6 +43,8 @@ export interface FakeOptions {
   oktaSession?: boolean;
   // The SP (or the GlobalProtect ACS) refuses the SAML response.
   spRejects?: boolean;
+  // The ACS moved within the same origin and requires the original POST.
+  acsRedirect?: 307 | 308;
   // How GlobalProtect prelogin hands over the SAMLRequest.
   gpBinding?: "REDIRECT" | "POST";
   // GlobalProtect interfaces whose prelogin offers SAML; the rest answer Error.
@@ -123,7 +125,13 @@ export function fakeSso(options: FakeOptions) {
         "MDL_SSP_SessID=ssp-1; Path=/; Secure; HttpOnly",
       ]);
     }
-    if (method === "POST" && url.pathname === ACS_PATH) {
+    if (method === "POST" && url.pathname === ACS_PATH && options.acsRedirect) {
+      return new Response(null, {
+        status: options.acsRedirect,
+        headers: { location: "/canonical-acs", "set-cookie": "acs-route=canonical; Path=/" },
+      });
+    }
+    if (method === "POST" && (url.pathname === ACS_PATH || url.pathname === "/canonical-acs")) {
       const form = new URLSearchParams(body);
       const accepted =
         !options.spRejects &&

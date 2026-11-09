@@ -117,14 +117,20 @@ async function post(client: Client, url: URL, body: object, sends: Sends): Promi
   });
   let state: IdxState | undefined;
   try {
-    state = (await response.json()) as IdxState;
+    const parsed: unknown = JSON.parse(response.body);
+    state = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as IdxState : undefined;
   } catch {
     state = undefined;
   }
 
   const keys = state ? errorKeys(state) : [];
-  if (response.ok && state && !keys.length) return state;
-  if (!state || response.status === 429 || response.status >= 500) throw httpError(response.status, url);
+  const ok = response.status >= 200 && response.status < 300;
+  if (ok && state && !keys.length) return state;
+  if (!state) {
+    if (!ok) throw httpError(response.status, url);
+    throw new OktaSignInError("unexpected_step", `${where(url)} returned an invalid IDX response`);
+  }
+  if (response.status === 429 || response.status >= 500) throw httpError(response.status, url);
 
   const reason = keys.length ? ` (${keys.join(", ")})` : "";
   if (sends === "identifier" || sends === "password") {
@@ -137,7 +143,7 @@ async function post(client: Client, url: URL, body: object, sends: Sends): Promi
   if (sends === "passcode") {
     throw new OktaSignInError("passcode_rejected", `Okta rejected the one-time code${reason}`);
   }
-  if (!response.ok) throw httpError(response.status, url, reason);
+  if (!ok) throw httpError(response.status, url, reason);
   throw new OktaSignInError("unexpected_step", `Okta reported an error at ${where(url)}${reason}`);
 }
 

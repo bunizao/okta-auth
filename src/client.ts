@@ -44,7 +44,7 @@ export class Client {
     }
   }
 
-  async send(url: URL, init: RequestInit = {}): Promise<Response> {
+  async send(url: URL, init: RequestInit = {}): Promise<Page> {
     if (url.protocol !== "https:") {
       throw new OktaSignInError("unexpected_step", `refusing a plain-HTTP request to ${where(url)}`);
     }
@@ -58,35 +58,41 @@ export class Client {
     const cookie = this.jar.header(url);
     if (cookie) headers.set("cookie", cookie);
 
-    let response: Response;
     try {
-      response = await this.fetch(url.href, {
+      const response = await this.fetch(url.href, {
         ...init,
         headers,
         redirect: "manual",
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
+      // fetch resolves at the headers; the body can still time out or disconnect.
+      const body = await response.text();
+      this.jar.store(url, response.headers);
+      return { url, status: response.status, headers: response.headers, body };
     } catch (error) {
       const reason = error instanceof Error && error.name === "TimeoutError" ? "timed out" : "failed";
       throw new OktaSignInError("network", `request to ${where(url)} ${reason}`);
     }
-    this.jar.store(url, response.headers);
-    return response;
   }
 
-  // Follows redirects the way a browser does after a form post: every hop is a
-  // GET. That also keeps a SAMLResponse from being re-posted to a second host.
+  // Preserve POSTs on same-origin 307/308 redirects, but never replay a SAML
+  // response to a different origin. Ordinary form redirects switch to GET.
   async follow(url: URL, init?: RequestInit): Promise<Page> {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const response = await this.send(url, init);
       const location = response.headers.get("location");
-      if (response.status >= 300 && response.status < 400 && location) {
-        await response.body?.cancel();
-        url = new URL(location, url);
-        init = undefined;
+      if ([301, 302, 303, 307, 308].includes(response.status) && location) {
+        const next = new URL(location, url);
+        const preserve = response.status === 307 || response.status === 308;
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (preserve && next.origin !== url.origin && method !== "GET" && method !== "HEAD") {
+          throw new OktaSignInError("unexpected_step", `refusing to replay a form to another origin (${where(next)})`);
+        }
+        url = next;
+        if (!preserve) init = undefined;
         continue;
       }
-      return { url, status: response.status, headers: response.headers, body: await response.text() };
+      return response;
     }
     throw new OktaSignInError("unexpected_step", `more than ${MAX_REDIRECTS} redirects, last at ${where(url)}`);
   }
