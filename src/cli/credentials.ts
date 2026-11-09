@@ -20,6 +20,32 @@ export async function readCredentials(): Promise<StoredCredentials> {
   };
 }
 
+// `--credentials-stdin`: one JSON object, {"username", "password", "totp_secret"},
+// so a caller can pass secrets without putting them in argv or the environment.
+export async function readCredentialsFromStdin(): Promise<StoredCredentials> {
+  let text = "";
+  for await (const chunk of process.stdin) text += chunk;
+  return parseCredentials(text);
+}
+
+export function parseCredentials(text: string): StoredCredentials {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = undefined;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    // Never echo the input: it holds the password.
+    throw new TypeError('stdin is not a JSON object like {"username", "password", "totp_secret"}');
+  }
+  const field = (name: string) => {
+    const value = (data as Record<string, unknown>)[name];
+    return typeof value === "string" && value ? value : undefined;
+  };
+  return { username: field("username"), password: field("password"), totpSecret: field("totp_secret") };
+}
+
 async function keychain(account: string): Promise<string | undefined> {
   if (process.platform !== "darwin") return undefined;
   try {

@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
-import { readCredentials } from "./credentials.js";
+import { readCredentials, readCredentialsFromStdin } from "./credentials.js";
 import { deleteSessions, listSessions, readDeviceToken, readSession, saveDeviceToken, saveSession } from "./store.js";
 
 const USAGE = `Usage: okta-auth <command> [--json]
@@ -18,7 +18,11 @@ Commands:
 
 Credentials come from OKTA_USERNAME, OKTA_PASSWORD and OKTA_TOTP_SECRET, or else
 from the macOS Keychain: service "okta-auth", accounts "username", "password"
-and "totp_secret".
+and "totp_secret". With --credentials-stdin they come only from stdin instead,
+as {"username": ..., "password": ..., "totp_secret": ...}.
+
+Exits 77 when Okta rejects the username or password: don't retry, the account
+locks after a few attempts. Any other failure exits 1.
 
 Sessions live in ~/.okta-auth/sessions (mode 0600).`;
 
@@ -29,12 +33,14 @@ async function main(argv: string[]): Promise<number> {
     options: {
       json: { type: "boolean", default: false },
       interface: { type: "string" },
+      "credentials-stdin": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
       version: { type: "boolean", short: "v", default: false },
     },
   });
   const [command, url] = positionals;
   const json = values.json;
+  const fromStdin = values["credentials-stdin"];
 
   if (values.version) {
     const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"));
@@ -48,7 +54,7 @@ async function main(argv: string[]): Promise<number> {
 
   switch (command) {
     case "login":
-      return login(requireUrl(url), json);
+      return login(requireUrl(url), json, fromStdin);
     case "status":
       return status(json);
     case "cookies":
@@ -56,15 +62,15 @@ async function main(argv: string[]): Promise<number> {
     case "logout":
       return logout(url, json);
     case "globalprotect":
-      return globalProtect(url, values.interface);
+      return globalProtect(url, values.interface, fromStdin);
     default:
       console.error(`okta-auth: unknown command "${command}"\n\n${USAGE}`);
       return 1;
   }
 }
 
-async function login(url: string, json: boolean): Promise<number> {
-  const credentials = await requireCredentials();
+async function login(url: string, json: boolean, fromStdin: boolean): Promise<number> {
+  const credentials = await requireCredentials(fromStdin);
   if (!credentials) return 1;
 
   const result = await signIn({ url, ...credentials, deviceToken: await readDeviceToken(url) });
@@ -79,12 +85,12 @@ async function login(url: string, json: boolean): Promise<number> {
 
 // Always JSON: the output is for a script that hands `cookie` to OpenConnect on
 // stdin. Nothing is saved; the cookie works once.
-async function globalProtect(server: string | undefined, iface: string | undefined): Promise<number> {
+async function globalProtect(server: string | undefined, iface: string | undefined, fromStdin: boolean): Promise<number> {
   if (!server) throw new TypeError("this command needs a server, e.g. vpn.gp.monash.edu");
   if (iface !== undefined && iface !== "gateway" && iface !== "portal") {
     throw new TypeError('--interface must be "gateway" or "portal"');
   }
-  const credentials = await requireCredentials();
+  const credentials = await requireCredentials(fromStdin);
   if (!credentials) return 1;
 
   const tokenKey = `https://${server}/`;
@@ -101,9 +107,15 @@ async function globalProtect(server: string | undefined, iface: string | undefin
   return 0;
 }
 
-async function requireCredentials(): Promise<{ username: string; password: string; totpSecret?: string } | undefined> {
-  const { username, password, totpSecret } = await readCredentials();
+async function requireCredentials(
+  fromStdin: boolean,
+): Promise<{ username: string; password: string; totpSecret?: string } | undefined> {
+  const { username, password, totpSecret } = await (fromStdin ? readCredentialsFromStdin() : readCredentials());
   if (username && password) return { username, password, totpSecret };
+  if (fromStdin) {
+    console.error("okta-auth: the JSON on stdin has no username or password");
+    return undefined;
+  }
   console.error(
     "okta-auth: no credentials. Set OKTA_USERNAME and OKTA_PASSWORD (and OKTA_TOTP_SECRET), " +
       'or store them in the Keychain under service "okta-auth"; see `okta-auth --help`.',
@@ -167,6 +179,7 @@ main(process.argv.slice(2)).then(
     } else {
       console.error(`okta-auth: ${error instanceof Error ? error.message : String(error)}`);
     }
-    process.exitCode = 1;
+    // 77 (EX_NOPERM) tells a supervising script to stop: a retry can lock the account.
+    process.exitCode = error instanceof OktaSignInError && error.code === "credentials_rejected" ? 77 : 1;
   },
 );

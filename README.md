@@ -195,6 +195,20 @@ security add-generic-password -U -s okta-auth -a totp_secret -w
 These are the entries the Python version's `okta config` wrote, so an existing
 setup keeps working.
 
+For scripts, `--credentials-stdin` takes the credentials only from stdin, as
+`{"username": ..., "password": ..., "totp_secret": ...}`, so they stay out of
+argv and the environment:
+
+```bash
+security find-generic-password -s my-service -w | okta-auth globalprotect vpn.gp.monash.edu --credentials-stdin
+```
+
+### Exit codes
+
+`0` on success, `77` when Okta rejects the username or password, `1` for
+everything else. A supervisor that retries on failure must stop on `77`: each
+attempt counts towards Okta's lockout.
+
 ## TOTP secret
 
 The TOTP secret is the base32 key behind an authenticator app. You can only see
