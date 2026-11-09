@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { Progress } from "../index.js";
 import { readConfig, type EnvName } from "./config.js";
@@ -124,4 +124,31 @@ async function keychain(account: string): Promise<string | undefined> {
     // Not found, or the user denied access.
     return undefined;
   }
+}
+
+// Stores the credentials under the Keychain entries `okta config` used.
+// Values reach `security` on stdin, twice because it asks to retype, never in
+// argv where `ps` shows them. Detached, it has no terminal to prompt on and
+// reads stdin.
+export async function saveToKeychain(values: { username: string; password: string; totpSecret?: string }): Promise<void> {
+  if (process.platform !== "darwin") throw new Error("the Keychain is only on macOS; set OKTA_USERNAME and OKTA_PASSWORD instead");
+  await keychainWrite("username", values.username);
+  await keychainWrite("password", values.password);
+  if (values.totpSecret) await keychainWrite("totp_secret", values.totpSecret);
+  else await promisify(execFile)("security", ["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", "totp_secret"]).catch(() => {});
+}
+
+function keychainWrite(account: string, value: string): Promise<void> {
+  if (/[\r\n]/.test(value)) return Promise.reject(new TypeError(`the ${account} can't contain a line break`));
+  return new Promise((resolve, reject) => {
+    const child = spawn("security", ["add-generic-password", "-U", "-s", KEYCHAIN_SERVICE, "-a", account, "-w"], {
+      detached: true,
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    child.on("error", () => reject(new Error("could not start security")));
+    child.on("exit", (code) =>
+      code === 0 ? resolve() : reject(new Error(`security exited with status ${code} saving the ${account}`)),
+    );
+    child.stdin.end(`${value}\n${value}\n`);
+  });
 }

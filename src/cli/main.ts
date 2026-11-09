@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
+import { OktaSignInError, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
 import { readCredentials, readCredentialsFromStdin, totpFrom1Password } from "./credentials.js";
 import { EXPORT_FLAG, exportJson, exportRefusal } from "./export.js";
+import { signInAndSave } from "./login.js";
+import { openBrowser, startSetup } from "./setup.js";
 import {
   cookieHeader,
   deleteSessions,
@@ -11,13 +13,13 @@ import {
   readDeviceToken,
   readSession,
   saveDeviceToken,
-  saveSession,
-  sessionUrl,
 } from "./store.js";
 
 const USAGE = `Usage: okta-auth <command> [--json]
 
 Commands:
+  setup           Open a page in your browser that sets up credentials
+                  (1Password or the Keychain) and tries a sign-in
   login <url>     Sign in through Okta and save the cookies <url>'s site sets
   status          List saved sessions
   cookies <url>   Print the saved cookies as a Cookie header (--json: full list)
@@ -81,6 +83,8 @@ async function main(argv: string[]): Promise<number> {
       return logout(url, json);
     case "globalprotect":
       return globalProtect(url, values.interface, fromStdin);
+    case "setup":
+      return setup();
     case "export":
       return exportCredentials(values[EXPORT_FLAG] === true);
     default:
@@ -93,19 +97,9 @@ async function login(url: string, json: boolean, fromStdin: boolean): Promise<nu
   const credentials = await requireCredentials(fromStdin);
   if (!credentials) return 1;
 
-  const result = await signIn({
-    url,
-    ...credentials,
-    deviceToken: await readDeviceToken(url),
-    onProgress: showProgress,
-  });
-  const saveUrl = sessionUrl(url, result.cookies);
-  const file = await saveSession(saveUrl, result.cookies);
-  await saveDeviceToken(url, result.deviceToken);
-
-  const host = new URL(saveUrl).host;
-  if (json) console.log(JSON.stringify({ host, cookies: result.cookies.length, file }, null, 2));
-  else console.log(`Signed in to ${host}; saved ${result.cookies.length} cookies to ${file}`);
+  const { host, cookies, file } = await signInAndSave(url, credentials, showProgress);
+  if (json) console.log(JSON.stringify({ host, cookies, file }, null, 2));
+  else console.log(`Signed in to ${host}; saved ${cookies} cookies to ${file}`);
   return 0;
 }
 
@@ -131,6 +125,16 @@ async function globalProtect(server: string | undefined, iface: string | undefin
 
   const { deviceToken: _, ...output } = result;
   console.log(JSON.stringify({ server, ...output }, null, 2));
+  return 0;
+}
+
+async function setup(): Promise<number> {
+  const server = await startSetup();
+  console.error(`okta-auth: setup is open in your browser. If it isn't, visit:\n  ${server.url}`);
+  openBrowser(server.url);
+  await server.done;
+  server.close();
+  console.error("okta-auth: setup finished");
   return 0;
 }
 

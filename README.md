@@ -198,19 +198,36 @@ doesn't count as a new device. Set `OKTA_AUTH_HOME` to use another directory.
 
 ### Credentials
 
-The CLI reads environment variables first:
+The quickest way in is the setup page:
+
+```bash
+okta-auth setup
+```
+
+It opens a page on `127.0.0.1` in your browser, lists your 1Password logins
+with the Okta ones first (or takes them for the macOS Keychain), and tries one
+sign-in so you know it works. The Python `okta setup` serves the same page and
+both CLIs read what it saves.
+
+With 1Password, only references (`op://…`) are written, to
+`~/.okta-auth/op.env`. The username and password are read with one `op inject`
+per sign-in, and if the login has a one-time password field, sign-in asks
+1Password for the current code (`?attribute=otp`): the TOTP secret never
+leaves 1Password. 1Password's browser extension can scan Okta's enrollment QR
+code straight into that field.
+
+Environment variables win over anything saved, and any of them may be an
+`op://` reference:
 
 ```bash
 export OKTA_USERNAME="you@example.edu"
 export OKTA_PASSWORD="..."
-export OKTA_TOTP_SECRET="JBSWY3DPEHPK3PXP"
+export OKTA_TOTP_SECRET="JBSWY3DPEHPK3PXP"   # or an otpauth:// URI
 ```
 
-That works with 1Password too: `op run --env-file=okta.env -- okta-auth login <url>`.
-
-On macOS, anything not in the environment comes from the Keychain, service
-`okta-auth`. With `-w` last, `security` prompts for the value instead of taking
-it on the command line:
+On macOS without setup, anything not in the environment comes from the
+Keychain, service `okta-auth`. With `-w` last, `security` prompts for the value
+instead of taking it on the command line:
 
 ```bash
 security add-generic-password -U -s okta-auth -a username -w
@@ -220,6 +237,20 @@ security add-generic-password -U -s okta-auth -a totp_secret -w
 
 These are the entries the Python version's `okta config` wrote, so an existing
 setup keeps working.
+
+### Programs that sign in by themselves
+
+A Worker that keeps an app signed in on its own (an OnTrack or Moodle MCP)
+needs the password and TOTP secret themselves, not a session:
+
+```bash
+okta-auth export --dangerously-print-password-and-totp-secret | npx wrangler secret bulk
+```
+
+It prints `{"OKTA_USERNAME", "OKTA_PASSWORD", "OKTA_TOTP_SECRET"}` and refuses
+to print to a terminal. Anything that holds both factors is as safe as its own
+account: put a passkey or hardware key on that Cloudflare account first.
+Programs on this machine should use `okta-auth cookies <url> --json` instead.
 
 For scripts, `--credentials-stdin` takes the credentials only from stdin, as
 `{"username": ..., "password": ..., "totp_secret": ...}`, so they stay out of

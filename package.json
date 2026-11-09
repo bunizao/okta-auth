@@ -20,7 +20,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp src/cli/setup.html dist/cli/",
     "check": "tsc --noEmit && tsc -p tsconfig.core.json",
     "test": "vitest run",
     "prepare": "npm run build",
