@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import traceback
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -386,3 +387,13 @@ def test_reports_invalid_successful_idx_responses_as_unexpected_step(body: str) 
         )
     )
     assert rejection(run).code == "unexpected_step"
+
+
+def test_keeps_request_urls_out_of_logs_even_at_debug(caplog: pytest.LogCaptureFixture) -> None:
+    # Python only: httpx logs full URLs (stateToken, SAMLRequest) at INFO.
+    caplog.set_level(logging.DEBUG)
+    _, run = setup()
+    run()
+
+    for secret in [PASSWORD, TOTP_SECRET, STATE_TOKEN, "stateToken=", "SAMLRequest="]:
+        assert secret not in caplog.text

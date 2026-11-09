@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from http.cookiejar import CookieJar as StdlibCookieJar
@@ -22,6 +23,11 @@ class Page:
 MAX_REDIRECTS = 10
 TIMEOUT_SECONDS = 15.0
 USER_AGENT = "okta-auth-cli (+https://github.com/bunizao/okta-auth)"
+
+# httpx logs every request's full URL at INFO, query string included: Okta's
+# stateToken and the SAMLRequest. Any app that turns on INFO logging (FastMCP
+# does) would print them, so keep httpx's logger at WARNING.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class Client:
