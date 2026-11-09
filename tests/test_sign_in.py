@@ -280,6 +280,10 @@ def test_reuses_an_okta_session_to_sign_in_to_a_second_app_without_mfa() -> None
 
     assert len(idx_calls(fake.requests)) == answered
     assert second.landing_url == ONTRACK_LANDING
+    # Okta answered with the SAML form straight away; it is still Okta's page,
+    # so the app's cookies come back, not Okta's.
+    assert [(c.name, c.domain) for c in second.cookies] == [("doubtfire", ONTRACK)]
+    assert [c.name for c in second.okta_session] == ["JSESSIONID", "sid"]
     assert [r for r in fake.requests if r.url.host != OKTA and "sid" in r.cookies] == []
 
 
