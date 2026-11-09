@@ -37,6 +37,13 @@ export async function saveSession(url: string, cookies: Cookie[]): Promise<strin
   return file;
 }
 
+// The URL a signed-in session is saved under. An Okta app link signs in to the
+// site the SAML post landed on, so the cookies belong to that site, not to Okta.
+export function sessionUrl(url: string, cookies: Cookie[]): string {
+  const site = cookies[0]?.domain;
+  return site && site !== new URL(url).hostname ? `https://${site}/` : url;
+}
+
 export async function readSession(url: string): Promise<SavedSession | undefined> {
   return readSessionFile(sessionFile(url), new URL(url).host);
 }

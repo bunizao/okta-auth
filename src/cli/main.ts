@@ -3,7 +3,16 @@ import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import { OktaSignInError, signIn, signInGlobalProtect, type GlobalProtectInterface } from "../index.js";
 import { readCredentials, readCredentialsFromStdin } from "./credentials.js";
-import { cookieHeader, deleteSessions, listSessions, readDeviceToken, readSession, saveDeviceToken, saveSession } from "./store.js";
+import {
+  cookieHeader,
+  deleteSessions,
+  listSessions,
+  readDeviceToken,
+  readSession,
+  saveDeviceToken,
+  saveSession,
+  sessionUrl,
+} from "./store.js";
 
 const USAGE = `Usage: okta-auth <command> [--json]
 
@@ -79,10 +88,11 @@ async function login(url: string, json: boolean, fromStdin: boolean): Promise<nu
     deviceToken: await readDeviceToken(url),
     onProgress: showProgress,
   });
-  const file = await saveSession(url, result.cookies);
+  const saveUrl = sessionUrl(url, result.cookies);
+  const file = await saveSession(saveUrl, result.cookies);
   await saveDeviceToken(url, result.deviceToken);
 
-  const host = new URL(url).host;
+  const host = new URL(saveUrl).host;
   if (json) console.log(JSON.stringify({ host, cookies: result.cookies.length, file }, null, 2));
   else console.log(`Signed in to ${host}; saved ${result.cookies.length} cookies to ${file}`);
   return 0;

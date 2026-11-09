@@ -10,6 +10,7 @@ import {
   readSession,
   saveDeviceToken,
   saveSession,
+  sessionUrl,
 } from "../src/cli/store.js";
 import type { Cookie } from "../src/index.js";
 
@@ -80,5 +81,12 @@ describe("session store", () => {
     expect(await readSession(URL_A)).toBeUndefined();
     expect(await readDeviceToken(URL_A)).toBe("dt-1");
     expect(JSON.parse(await readFile(join(home, "device-tokens.json"), "utf8"))).toEqual({ "learning.example.edu": "dt-1" });
+  });
+
+  it("saves an Okta app link's session under the site it landed on", () => {
+    const appLink = "https://example.okta.com/app/example_ontrack/exk3/sso/saml";
+    expect(sessionUrl(appLink, [cookie("doubtfire", "ontrack.example.edu")])).toBe("https://ontrack.example.edu/");
+    expect(sessionUrl(URL_A, [cookie("MoodleSession")])).toBe(URL_A);
+    expect(sessionUrl(appLink, [])).toBe(appLink);
   });
 });
