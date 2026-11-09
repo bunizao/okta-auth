@@ -120,19 +120,32 @@ class Client:
         headers: Mapping[str, str] | None = None,
         body: str | None = None,
     ) -> Page:
-        """Follows redirects the way a browser does after a form post: every hop is
-        a GET. That also keeps a SAMLResponse from being re-posted to a second host."""
+        """Preserves POSTs on same-origin 307/308 redirects, but never replays a SAML
+        response to a different origin. Ordinary form redirects switch to GET."""
         for _ in range(MAX_REDIRECTS + 1):
             response = await self.send(url, method=method, headers=headers, body=body)
             location = response.headers.get("location")
-            if 300 <= response.status_code < 400 and location:
+            if response.status_code in (301, 302, 303, 307, 308) and location:
                 try:
-                    url = url.join(location)
+                    next_url = url.join(location)
                 except httpx.InvalidURL:
                     raise OktaSignInError(
                         "unexpected_step", f"{where(url)} redirected to an invalid URL"
                     ) from None
-                method, headers, body = "GET", None, None
+                preserve = response.status_code in (307, 308)
+                same_origin = (url.scheme, url.host, url.port) == (
+                    next_url.scheme,
+                    next_url.host,
+                    next_url.port,
+                )
+                if preserve and not same_origin and method.upper() not in ("GET", "HEAD"):
+                    raise OktaSignInError(
+                        "unexpected_step",
+                        f"refusing to replay a form to another origin ({where(next_url)})",
+                    )
+                url = next_url
+                if not preserve:
+                    method, headers, body = "GET", None, None
                 continue
             return Page(
                 url=url, status=response.status_code, headers=response.headers, body=response.text

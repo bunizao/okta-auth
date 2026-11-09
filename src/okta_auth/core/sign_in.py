@@ -147,10 +147,14 @@ async def _post(client: Client, url: httpx.URL, body: dict[str, Any], sends: Sen
         data = None
     state: IdxState | None = data if isinstance(data, dict) else None
 
-    keys = error_keys(state) if state else []
-    if response.is_success and state and not keys:
+    keys = error_keys(state) if state is not None else []
+    if response.is_success and state is not None and not keys:
         return state
-    if not state or response.status_code == 429 or response.status_code >= 500:
+    if state is None:
+        if not response.is_success:
+            raise http_error(response.status_code, url)
+        raise OktaSignInError("unexpected_step", f"{where(url)} returned an invalid IDX response")
+    if response.status_code == 429 or response.status_code >= 500:
         raise http_error(response.status_code, url)
 
     reason = f" ({', '.join(keys)})" if keys else ""

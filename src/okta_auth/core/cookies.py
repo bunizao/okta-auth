@@ -31,43 +31,58 @@ class CookieJar:
 
     def __init__(self, now: Callable[[], float]) -> None:
         self._now = now
-        self._hosts: dict[str, dict[str, Cookie]] = {}
+        self._hosts: dict[str, dict[tuple[str, str], Cookie]] = {}
 
     def store(self, url: httpx.URL, headers: httpx.Headers) -> None:
         for line in headers.get_list("set-cookie"):
-            cookie = parse_set_cookie(line, url.host, self._now())
+            cookie = parse_set_cookie(line, url, self._now())
             if cookie:
                 self.set(cookie)
 
     def set(self, cookie: Cookie) -> None:
         cookies = self._hosts.setdefault(cookie.domain, {})
+        key = (cookie.name, cookie.path)
         if self._is_expired(cookie):
-            cookies.pop(cookie.name, None)
+            cookies.pop(key, None)
         else:
-            cookies[cookie.name] = cookie
+            cookies[key] = cookie
 
-    def get(self, host: str, name: str) -> Cookie | None:
-        cookie = self._hosts.get(host, {}).get(name)
+    def get(self, host: str, name: str, path: str = "/") -> Cookie | None:
+        cookie = self._hosts.get(host, {}).get((name, path))
         return cookie if cookie and not self._is_expired(cookie) else None
 
     def list(self, host: str) -> builtins.list[Cookie]:
         return [c for c in self._hosts.get(host, {}).values() if not self._is_expired(c)]
 
     def header(self, url: httpx.URL) -> str | None:
-        pairs = [f"{cookie.name}={cookie.value}" for cookie in self.list(url.host)]
+        path = url.raw_path.split(b"?", 1)[0].decode("ascii")
+        cookies = [
+            cookie
+            for cookie in self.list(url.host)
+            if path == cookie.path
+            or path.startswith(cookie.path if cookie.path.endswith("/") else f"{cookie.path}/")
+        ]
+        cookies.sort(key=lambda cookie: len(cookie.path), reverse=True)
+        pairs = [f"{cookie.name}={cookie.value}" for cookie in cookies]
         return "; ".join(pairs) if pairs else None
 
     def _is_expired(self, cookie: Cookie) -> bool:
         return cookie.expires is not None and cookie.expires <= self._now()
 
 
-def parse_set_cookie(line: str, host: str, now: float) -> Cookie | None:
+def parse_set_cookie(line: str, url: httpx.URL, now: float) -> Cookie | None:
     pair, *attributes = line.split(";")
     equals = pair.find("=")
     if equals <= 0:
         return None
 
-    cookie = Cookie(name=pair[:equals].strip(), value=pair[equals + 1 :].strip(), domain=host)
+    path = url.raw_path.split(b"?", 1)[0].decode("ascii")
+    cookie = Cookie(
+        name=pair[:equals].strip(),
+        value=pair[equals + 1 :].strip(),
+        domain=url.host,
+        path=path.rsplit("/", 1)[0] or "/",
+    )
     max_age: int | None = None
     for attribute in attributes:
         raw_key, _, value = attribute.partition("=")

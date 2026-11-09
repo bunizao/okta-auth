@@ -8,6 +8,7 @@ import traceback
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -299,3 +300,64 @@ def test_rejects_bad_input_before_any_request() -> None:
     with pytest.raises(ValueError):
         run(totp_secret="not base32!")
     assert fake.requests == []
+
+
+def test_preserves_saml_posts_across_same_origin_307_and_308_redirects() -> None:
+    for status in (307, 308):
+        fake, run = setup({"acs_redirect": status})
+        result = run()
+        assert next(c.value for c in result.cookies if c.name == "MoodleSession") == "authed"
+        acs = next(r for r in fake.requests if r.url.path == "/canonical-acs")
+        assert acs.method == "POST"
+        assert "SAMLResponse" in parse_qs(acs.body)
+        assert acs.headers.get("content-type") == "application/x-www-form-urlencoded"
+        assert acs.cookies.get("acs-route") == "canonical"
+
+
+@pytest.mark.parametrize("status", [307, 308])
+def test_refuses_to_replay_saml_posts_across_origins(status: int) -> None:
+    fake, run = setup()
+    fake.set_override(
+        lambda request: (
+            httpx.Response(status, headers={"location": f"https://{SP}:8443/acs?token=private"})
+            if "saml2-acs.php" in request.url.path
+            else None
+        )
+    )
+    error = rejection(run)
+    assert error.code == "unexpected_step"
+    assert "private" not in str(error)
+    assert not any(r.url.port == 8443 for r in fake.requests)
+
+
+@pytest.mark.parametrize("path", ["/login/index.php", "/idp/idx/introspect"])
+@pytest.mark.parametrize("error_type", [httpx.ReadError, httpx.ReadTimeout])
+def test_maps_interrupted_page_and_idx_response_bodies_to_network(
+    path: str, error_type: type[httpx.HTTPError]
+) -> None:
+    class BrokenBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"partial body"
+            raise error_type(f"{PASSWORD} {STATE_TOKEN}")
+
+    fake, run = setup()
+    fake.set_override(
+        lambda request: (
+            httpx.Response(200, stream=BrokenBody()) if request.url.path == path else None
+        )
+    )
+    error = rejection(run)
+    assert error.code == "network"
+    expect_no_secrets(error)
+    assert len([r for r in fake.requests if r.url.path == path]) == 1
+
+
+@pytest.mark.parametrize("body", ["not json", "null", "[]", '"text"'])
+def test_reports_invalid_successful_idx_responses_as_unexpected_step(body: str) -> None:
+    fake, run = setup()
+    fake.set_override(
+        lambda request: (
+            httpx.Response(200, text=body) if request.url.path == "/idp/idx/introspect" else None
+        )
+    )
+    assert rejection(run).code == "unexpected_step"

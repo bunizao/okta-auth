@@ -61,6 +61,8 @@ class FakeOptions:
     okta_session: bool = False
     # The SP (or the GlobalProtect ACS) refuses the SAML response.
     sp_rejects: bool = False
+    # The ACS moved within the same origin and requires the original POST.
+    acs_redirect: Literal[307, 308] | None = None
     # How GlobalProtect prelogin hands over the SAMLRequest.
     gp_binding: Literal["REDIRECT", "POST"] = "REDIRECT"
     # GlobalProtect interfaces whose prelogin offers SAML; the rest answer Error.
@@ -161,7 +163,12 @@ class FakeSso:
                     "MDL_SSP_SessID=ssp-1; Path=/; Secure; HttpOnly",
                 ],
             )
-        if method == "POST" and url.path == ACS_PATH:
+        if method == "POST" and url.path == ACS_PATH and self.options.acs_redirect:
+            return httpx.Response(
+                self.options.acs_redirect,
+                headers={"location": "/canonical-acs", "set-cookie": "acs-route=canonical; Path=/"},
+            )
+        if method == "POST" and url.path in (ACS_PATH, "/canonical-acs"):
             form = _form(request.body)
             accepted = (
                 not self.options.sp_rejects
