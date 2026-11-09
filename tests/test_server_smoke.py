@@ -1,8 +1,8 @@
 import asyncio
 import json
-import subprocess
 
-from okta_auth import runtime_credentials, server
+from fake_op import install_fake_op
+from okta_auth import server
 from okta_auth.credential_store import StoredCredentials
 from okta_auth.settings import AppSettings
 
@@ -83,17 +83,10 @@ def test_okta_login_resolves_op_env_file(monkeypatch, tmp_path) -> None:
         "load_settings",
         lambda: AppSettings(credential_provider="op", op_env_file=str(env_path)),
     )
-    monkeypatch.setattr(runtime_credentials.shutil, "which", lambda command: "/usr/local/bin/op")
-
-    def fake_run(cmd, *, check, capture_output, text, timeout):
-        mapping = {
-            "op://Private/Okta/username": "user@example.com\n",
-            "op://Private/Okta/password": "secret\n",
-        }
-        assert cmd[:2] == ["/usr/local/bin/op", "read"]
-        return subprocess.CompletedProcess(cmd, 0, stdout=mapping[cmd[2]], stderr="")
-
-    monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)
+    install_fake_op(
+        monkeypatch,
+        {"op://Private/Okta/username": "user@example.com", "op://Private/Okta/password": "secret"},
+    )
 
     payload = json.loads(asyncio.run(server.okta_login(url="https://portal.example.com")))
 

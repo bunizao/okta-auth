@@ -1,13 +1,14 @@
 import json
-import subprocess
 
 import httpx
 import pytest
 
+from fake_op import install_fake_op
 from okta_auth import adapter, runtime_credentials
 from okta_auth.auth import login, session_store
 from okta_auth.core import Cookie
 from okta_auth.credential_store import StoredCredentials
+from okta_auth.runtime_credentials import RuntimeCredentials
 from okta_auth.settings import AppSettings
 
 
@@ -118,7 +119,9 @@ def test_ensure_login_reauthenticates_after_a_same_host_login_page(monkeypatch, 
     monkeypatch.setattr(adapter, "verify_session", verify_stored_session)
     monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
     monkeypatch.setattr(
-        adapter, "_resolve_credentials", lambda: ("test-user", "test-password", None, AppSettings())
+        adapter,
+        "resolve_credentials",
+        lambda: RuntimeCredentials("test-user", "test-password", None, None, AppSettings()),
     )
 
     result = adapter.ensure_login(url)
@@ -164,23 +167,18 @@ def test_ensure_login_resolves_op_env_file(monkeypatch, tmp_path) -> None:
         "load_settings",
         lambda: AppSettings(credential_provider="op", op_env_file=str(env_path)),
     )
-    monkeypatch.setattr(runtime_credentials.shutil, "which", lambda command: "/usr/local/bin/op")
-
-    def fake_run(cmd, *, check, capture_output, text, timeout):
-        mapping = {
-            "op://Private/Okta/username": "user@example.com\n",
-            "op://Private/Okta/password": "secret\n",
-            "op://Private/Okta/totp_secret": "JBSWY3DPEHPK3PXP\n",
-        }
-        assert cmd[:2] == ["/usr/local/bin/op", "read"]
-        return subprocess.CompletedProcess(cmd, 0, stdout=mapping[cmd[2]], stderr="")
-
-    monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)
+    install_fake_op(
+        monkeypatch,
+        {"op://Private/Okta/username": "user@example.com", "op://Private/Okta/password": "secret"},
+        codes={"op://Private/Okta/totp_secret?attribute=otp": "123456"},
+    )
 
     async def fake_perform_login(**kwargs):
         assert kwargs["username"] == "user@example.com"
         assert kwargs["password"] == "secret"
-        assert kwargs["totp_secret"] == "JBSWY3DPEHPK3PXP"
+        # The TOTP secret stays in 1Password: sign-in gets codes from it.
+        assert kwargs["totp_secret"] is None
+        assert await kwargs["totp_code"]() == "123456"
         return {
             "success": True,
             "domain_key": "school.example.edu",

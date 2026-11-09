@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import sys
+from collections.abc import Awaitable, Callable
 from getpass import getpass
 from typing import Any, Sequence
 
@@ -20,7 +21,7 @@ from okta_auth.credential_store import (
     get_store_status,
 )
 from okta_auth.credential_store import load_credentials as load_stored_credentials
-from okta_auth.runtime_credentials import resolve_runtime_credentials
+from okta_auth.runtime_credentials import resolve_credentials
 from okta_auth.settings import (
     AppSettings,
     clear_op_env_file,
@@ -146,13 +147,14 @@ async def _run_login(args: argparse.Namespace) -> int:
     _warn_ignored(args, "headed", "timeout_ms", "settle_ms")
     stored_settings = load_settings()
     url = _require_value(args.url or stored_settings.default_url, "Target URL", secret=False)
-    username, password, totp_secret = _resolve_credentials(args, stored_settings)
+    username, password, totp_secret, totp_code = _resolve_credentials(args, stored_settings)
 
     result = await perform_login(
         url=url,
         username=username,
         password=password,
         totp_secret=totp_secret,
+        totp_code=totp_code,
         progress=_show_progress,
     )
     exit_code = _print_result(
@@ -170,7 +172,7 @@ async def _run_login(args: argparse.Namespace) -> int:
 async def _run_globalprotect(args: argparse.Namespace) -> int:
     """Always prints JSON, for a script that hands `cookie` to OpenConnect on stdin.
     Nothing is saved but the device token; the cookie works once."""
-    username, password, totp_secret = _resolve_credentials(args, load_settings())
+    username, password, totp_secret, totp_code = _resolve_credentials(args, load_settings())
     token_key = f"https://{args.server}/"
     try:
         result = await sign_in_globalprotect(
@@ -179,6 +181,7 @@ async def _run_globalprotect(args: argparse.Namespace) -> int:
             username=username,
             password=password,
             totp_secret=totp_secret,
+            totp_code=totp_code,
             device_token=session_store.read_device_token(token_key),
             progress=_show_progress,
         )
@@ -293,11 +296,11 @@ def _run_config(args: argparse.Namespace) -> int:
 
 def _resolve_credentials(
     args: argparse.Namespace, stored_settings: AppSettings
-) -> tuple[str, str, str | None]:
+) -> tuple[str, str, str | None, Callable[[], Awaitable[str]] | None]:
     stored_credentials = (
         load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
     )
-    username, password, totp_secret, _ = resolve_runtime_credentials(
+    credentials = resolve_credentials(
         explicit_username=args.username,
         explicit_password=args.password,
         explicit_totp_secret=args.totp_secret,
@@ -305,10 +308,14 @@ def _resolve_credentials(
         stored_credentials=stored_credentials,
         progress=_show_progress,
     )
-    username = _require_value(username, "Username", secret=False)
-    password = _require_value(password, "Password", secret=True)
-    totp_secret = _prompt_optional_value(totp_secret, "TOTP secret")
-    return username, password, totp_secret
+    username = _require_value(credentials.username, "Username", secret=False)
+    password = _require_value(credentials.password, "Password", secret=True)
+    totp_code = credentials.totp_code(_show_progress)
+    # With a TOTP field in 1Password there's nothing to ask for.
+    totp_secret = (
+        None if totp_code else _prompt_optional_value(credentials.totp_secret, "TOTP secret")
+    )
+    return username, password, totp_secret, totp_code
 
 
 def _show_progress(message: str) -> None:

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from okta_auth.auth.login import perform_login, verify_session
 from okta_auth.auth.session_store import get_session_path
-from okta_auth.runtime_credentials import resolve_runtime_credentials
+from okta_auth.runtime_credentials import resolve_credentials
 from okta_auth.settings import AppSettings
 
 
@@ -87,16 +87,17 @@ def ensure_login(url: str) -> dict[str, Any]:
                 "performed_login": False,
             }
 
-    username, password, totp_secret, app_settings = _resolve_credentials()
-    if not username or not password:
-        raise OktaAdapterError(_missing_credentials_message(app_settings))
+    credentials = resolve_credentials()
+    if not credentials.username or not credentials.password:
+        raise OktaAdapterError(_missing_credentials_message(credentials.settings))
 
     result = asyncio.run(
         perform_login(
             url=url,
-            username=username,
-            password=password,
-            totp_secret=totp_secret,
+            username=credentials.username,
+            password=credentials.password,
+            totp_secret=credentials.totp_secret,
+            totp_code=credentials.totp_code(),
         )
     )
     if not result.get("success"):
@@ -107,16 +108,6 @@ def ensure_login(url: str) -> dict[str, Any]:
     payload = dict(result)
     payload["performed_login"] = True
     return payload
-
-
-def _resolve_credentials() -> tuple[str | None, str | None, str | None, AppSettings]:
-    username, password, totp_secret, app_settings = resolve_runtime_credentials()
-    return (
-        username,
-        password,
-        totp_secret,
-        app_settings,
-    )
 
 
 def _missing_credentials_message(app_settings: AppSettings) -> str:

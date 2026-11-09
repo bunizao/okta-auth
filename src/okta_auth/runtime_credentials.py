@@ -2,23 +2,125 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import shutil
-import subprocess
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
+from okta_auth import onepassword
 from okta_auth.credential_store import StoredCredentials
 from okta_auth.credential_store import load_credentials as load_stored_credentials
 from okta_auth.settings import AppSettings, load_settings, uses_keyring
 
 _OP_REFERENCE_PREFIX = "op://"
-_OP_READ_TIMEOUT_SECONDS = 20
 _CREDENTIAL_ENV_NAMES = (
     "OKTA_USERNAME",
     "OKTA_PASSWORD",
     "OKTA_TOTP_SECRET",
 )
+
+
+@dataclass
+class RuntimeCredentials:
+    username: str | None
+    password: str | None
+    totp_secret: str | None
+    # A 1Password reference to the TOTP field. Sign-in asks 1Password for the
+    # current code through it, so the secret itself stays in 1Password.
+    totp_ref: str | None
+    settings: AppSettings
+
+    def totp_code(
+        self, progress: Callable[[str], None] | None = None
+    ) -> Callable[[], Awaitable[str]] | None:
+        """The sign-in callback for a TOTP field in 1Password, or None."""
+        ref = self.totp_ref
+        if ref is None:
+            return None
+
+        async def code() -> str:
+            if progress:
+                progress("Asking 1Password for a TOTP code")
+            return await asyncio.to_thread(onepassword.read_totp_code, ref)
+
+        return code
+
+
+def resolve_credentials(
+    *,
+    explicit_username: str | None = None,
+    explicit_password: str | None = None,
+    explicit_totp_secret: str | None = None,
+    app_settings: AppSettings | None = None,
+    stored_credentials: StoredCredentials | None = None,
+    progress: Callable[[str], None] | None = None,
+    read_totp_secret: bool = False,
+) -> RuntimeCredentials:
+    """Resolve credentials from CLI args, env, 1Password refs, or keyring.
+
+    Any value may be an op:// reference; they're all read with one `op inject`,
+    which can wait for approval in the 1Password app, so `progress` hears about
+    it before it starts and about why it failed. A TOTP reference is read only
+    with `read_totp_secret` (for `export`); otherwise sign-in asks 1Password for
+    codes through `totp_code`."""
+    current_settings = app_settings or load_settings()
+    current_credentials = stored_credentials
+    if current_credentials is None:
+        current_credentials = (
+            load_stored_credentials() if uses_keyring(current_settings) else StoredCredentials()
+        )
+    op_reference_values = _load_op_reference_values(current_settings)
+
+    def pick(*candidates: str | None) -> str | None:
+        return next((candidate for candidate in candidates if candidate), None)
+
+    values: dict[str, str | None] = {
+        "username": pick(
+            explicit_username,
+            os.environ.get("OKTA_USERNAME"),
+            op_reference_values.get("OKTA_USERNAME"),
+            current_credentials.username,
+        ),
+        "password": pick(
+            explicit_password,
+            os.environ.get("OKTA_PASSWORD"),
+            op_reference_values.get("OKTA_PASSWORD"),
+            current_credentials.password,
+        ),
+        "TOTP secret": pick(
+            explicit_totp_secret,
+            os.environ.get("OKTA_TOTP_SECRET"),
+            op_reference_values.get("OKTA_TOTP_SECRET"),
+            current_credentials.totp_secret,
+        ),
+    }
+    to_read = [
+        label
+        for label, value in values.items()
+        if value and onepassword.is_op_ref(value) and (label != "TOTP secret" or read_totp_secret)
+    ]
+    if to_read:
+        what = to_read[0] if len(to_read) == 1 else f"{', '.join(to_read[:-1])} and {to_read[-1]}"
+        if progress:
+            progress(f"Reading the {what} from 1Password (approve it there if asked)")
+        try:
+            read = onepassword.read_refs([values[label] or "" for label in to_read])
+            values.update(zip(to_read, read, strict=True))
+        except onepassword.OpError as error:
+            if progress:
+                progress(f"Could not read the {what} from 1Password: {error}")
+            values.update((label, None) for label in to_read)
+
+    totp_value = values["TOTP secret"]
+    totp_ref = totp_value if totp_value and onepassword.is_op_ref(totp_value) else None
+    return RuntimeCredentials(
+        username=values["username"] or None,
+        password=values["password"] or None,
+        totp_secret=onepassword.totp_secret_of(totp_value) if totp_value and not totp_ref else None,
+        totp_ref=totp_ref,
+        settings=current_settings,
+    )
 
 
 def resolve_runtime_credentials(
@@ -30,106 +132,22 @@ def resolve_runtime_credentials(
     stored_credentials: StoredCredentials | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[str | None, str | None, str | None, AppSettings]:
-    """Resolve runtime credentials from CLI args, env, 1Password refs, or keyring.
-
-    `op read` can wait for approval in the 1Password app; `progress` hears about
-    each read before it starts and about each one that fails."""
-    current_settings = app_settings or load_settings()
-    current_credentials = stored_credentials
-    if current_credentials is None:
-        current_credentials = (
-            load_stored_credentials() if uses_keyring(current_settings) else StoredCredentials()
-        )
-
-    op_reference_values = _load_op_reference_values(current_settings)
-    op_cache: dict[str, str | None] = {}
-
-    username = _resolve_value(
-        explicit_username,
-        os.environ.get("OKTA_USERNAME"),
-        op_reference_values.get("OKTA_USERNAME"),
-        current_credentials.username,
-        op_cache=op_cache,
-        label="username",
+    """resolve_credentials with the TOTP secret itself read, as a tuple."""
+    credentials = resolve_credentials(
+        explicit_username=explicit_username,
+        explicit_password=explicit_password,
+        explicit_totp_secret=explicit_totp_secret,
+        app_settings=app_settings,
+        stored_credentials=stored_credentials,
         progress=progress,
+        read_totp_secret=True,
     )
-    password = _resolve_value(
-        explicit_password,
-        os.environ.get("OKTA_PASSWORD"),
-        op_reference_values.get("OKTA_PASSWORD"),
-        current_credentials.password,
-        op_cache=op_cache,
-        label="password",
-        progress=progress,
+    return (
+        credentials.username,
+        credentials.password,
+        credentials.totp_secret,
+        credentials.settings,
     )
-    totp_secret = _resolve_value(
-        explicit_totp_secret,
-        os.environ.get("OKTA_TOTP_SECRET"),
-        op_reference_values.get("OKTA_TOTP_SECRET"),
-        current_credentials.totp_secret,
-        op_cache=op_cache,
-        label="TOTP secret",
-        progress=progress,
-    )
-
-    return username, password, totp_secret, current_settings
-
-
-def _resolve_value(
-    *candidates: str | None,
-    op_cache: dict[str, str | None],
-    label: str = "value",
-    progress: Callable[[str], None] | None = None,
-) -> str | None:
-    for candidate in candidates:
-        if not candidate:
-            continue
-        return _maybe_resolve_op_reference(candidate, op_cache, label, progress)
-    return None
-
-
-def _maybe_resolve_op_reference(
-    value: str,
-    op_cache: dict[str, str | None],
-    label: str = "value",
-    progress: Callable[[str], None] | None = None,
-) -> str | None:
-    if not value.startswith(_OP_REFERENCE_PREFIX):
-        return value
-
-    if value not in op_cache:
-        if progress:
-            progress(f"Reading the {label} from 1Password (approve it there if asked)")
-        resolved, failure = _read_op_reference(value)
-        if failure and progress:
-            progress(f"Could not read the {label} from 1Password: {failure}")
-        op_cache[value] = resolved
-    return op_cache[value]
-
-
-def _read_op_reference(reference: str) -> tuple[str | None, str | None]:
-    """The referenced value, or None and why not. The reason never includes op's
-    output: it can echo the reference or the value."""
-    op_path = shutil.which("op")
-    if not op_path:
-        return None, "the op command is not installed"
-
-    try:
-        result = subprocess.run(
-            [op_path, "read", reference],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=_OP_READ_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return None, f"op read timed out after {_OP_READ_TIMEOUT_SECONDS}s"
-    except subprocess.CalledProcessError as error:
-        return None, f"op read exited with status {error.returncode}"
-    except OSError:
-        return None, "op could not be started"
-
-    return _trim_trailing_newline(result.stdout), None
 
 
 def _load_op_reference_values(app_settings: AppSettings) -> dict[str, str]:
@@ -200,11 +218,3 @@ def _strip_optional_quotes(value: str) -> str:
 
 def _build_op_reference(vault: str, item: str, field: str) -> str:
     return f"{_OP_REFERENCE_PREFIX}{vault}/{item}/{field}"
-
-
-def _trim_trailing_newline(value: str) -> str:
-    if value.endswith("\r\n"):
-        return value[:-2]
-    if value.endswith("\n"):
-        return value[:-1]
-    return value

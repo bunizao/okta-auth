@@ -7,6 +7,7 @@ session and device-token files for the CLI, the MCP server and the adapter.
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ async def perform_login(
     password: str,
     totp_secret: str | None = None,
     *,
+    totp_code: Callable[[], Awaitable[str]] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     progress: Progress = quiet,
 ) -> dict[str, Any]:
@@ -40,6 +42,7 @@ async def perform_login(
             username=username,
             password=password,
             totp_secret=totp_secret,
+            totp_code=totp_code,
             device_token=session_store.read_device_token(url),
             transport=transport,
             progress=progress,

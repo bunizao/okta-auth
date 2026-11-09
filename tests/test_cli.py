@@ -1,9 +1,11 @@
 import io
 import json
-import subprocess
 from pathlib import Path
 
-from okta_auth import GlobalProtectResult, cli, runtime_credentials
+import pytest
+
+from fake_op import install_fake_op
+from okta_auth import GlobalProtectResult, cli
 from okta_auth.credential_store import CredentialStoreError, StoredCredentials
 from okta_auth.settings import AppSettings
 
@@ -46,7 +48,14 @@ def test_okta_defaults_to_login(monkeypatch, capsys) -> None:
 
 def test_okta_login_ignores_browser_options_from_before_0_3(monkeypatch, capsys) -> None:
     async def fake_perform_login(**kwargs):
-        assert set(kwargs) == {"url", "username", "password", "totp_secret", "progress"}
+        assert set(kwargs) == {
+            "url",
+            "username",
+            "password",
+            "totp_secret",
+            "totp_code",
+            "progress",
+        }
         return {
             "success": True,
             "domain_key": "portal.example.com",
@@ -379,7 +388,8 @@ def test_okta_resolves_op_references_from_environment(monkeypatch) -> None:
         assert kwargs["url"] == "https://portal.example.com"
         assert kwargs["username"] == "resolved-user@example.com"
         assert kwargs["password"] == "resolved-secret"
-        assert kwargs["totp_secret"] == "RESOLVEDTOTP"
+        assert kwargs["totp_secret"] is None
+        assert await kwargs["totp_code"]() == "654321"
         return {
             "success": True,
             "domain_key": "portal.example.com",
@@ -400,26 +410,20 @@ def test_okta_resolves_op_references_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("OKTA_USERNAME", "op://Private/Okta/username")
     monkeypatch.setenv("OKTA_PASSWORD", "op://Private/Okta/password")
     monkeypatch.setenv("OKTA_TOTP_SECRET", "op://Private/Okta/totp_secret")
-    monkeypatch.setattr(runtime_credentials.shutil, "which", lambda command: "/usr/local/bin/op")
-
-    def fake_run(cmd, *, check, capture_output, text, timeout):
-        mapping = {
-            "op://Private/Okta/username": "resolved-user@example.com\n",
-            "op://Private/Okta/password": "resolved-secret\n",
-            "op://Private/Okta/totp_secret": "RESOLVEDTOTP\n",
-        }
-        assert cmd[:2] == ["/usr/local/bin/op", "read"]
-        assert check is True
-        assert capture_output is True
-        assert text is True
-        assert timeout == 20
-        return subprocess.CompletedProcess(cmd, 0, stdout=mapping[cmd[2]], stderr="")
-
-    monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)
+    calls = install_fake_op(
+        monkeypatch,
+        {
+            "op://Private/Okta/username": "resolved-user@example.com",
+            "op://Private/Okta/password": "resolved-secret",
+        },
+        codes={"op://Private/Okta/totp_secret?attribute=otp": "654321"},
+    )
 
     exit_code = cli.main([])
 
     assert exit_code == 0
+    # One approval for the username and password, then only codes.
+    assert [call[0] for call in calls] == ["inject", "read"]
 
 
 def test_okta_check_json(monkeypatch, capsys) -> None:
@@ -444,13 +448,7 @@ def test_okta_check_json(monkeypatch, capsys) -> None:
 
 def test_okta_says_when_it_waits_on_1password_and_why_a_read_failed(monkeypatch, capsys) -> None:
     async def fake_perform_login(**kwargs):
-        assert kwargs["totp_secret"] is None
-        return {
-            "success": True,
-            "domain_key": "portal.example.com",
-            "message": "Session saved for portal.example.com",
-            "url": "https://portal.example.com",
-        }
+        raise AssertionError("sign-in must not start without credentials")
 
     monkeypatch.setattr(cli, "perform_login", fake_perform_login)
     monkeypatch.setattr(
@@ -462,19 +460,15 @@ def test_okta_says_when_it_waits_on_1password_and_why_a_read_failed(monkeypatch,
     monkeypatch.setenv("OKTA_USERNAME", "op://Private/Okta/username")
     monkeypatch.setenv("OKTA_PASSWORD", "op://Private/Okta/password")
     monkeypatch.setenv("OKTA_TOTP_SECRET", "op://Private/Okta/totp_secret")
-    monkeypatch.setattr(runtime_credentials.shutil, "which", lambda command: "/usr/local/bin/op")
+    install_fake_op(monkeypatch, {}, fail=True)
 
-    def fake_run(cmd, **kwargs):
-        if cmd[2].endswith("totp_secret"):
-            raise subprocess.CalledProcessError(1, cmd, output="", stderr="op: dismissed")
-        return subprocess.CompletedProcess(cmd, 0, stdout="resolved-secret\n", stderr="")
-
-    monkeypatch.setattr(runtime_credentials.subprocess, "run", fake_run)
-
-    assert cli.main([]) == 0
+    # Without a terminal to prompt on, a failed read ends the command.
+    with pytest.raises(SystemExit, match="Username is required"):
+        cli.main([])
     errors = capsys.readouterr().err
-    for label in ["username", "password", "TOTP secret"]:
-        assert f"okta: Reading the {label} from 1Password" in errors
-    assert "Could not read the TOTP secret from 1Password: op read exited with status 1" in errors
-    assert "resolved-secret" not in errors
+    assert "okta: Reading the username and password from 1Password" in errors
+    assert (
+        "Could not read the username and password from 1Password: "
+        "op inject exited with status 1" in errors
+    )
     assert "dismissed" not in errors
