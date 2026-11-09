@@ -325,7 +325,11 @@ def _require_value(value: str | None, label: str, *, secret: bool) -> str:
         raise SystemExit(f"{label} is required in non-interactive mode.")
 
     while True:
-        entered = getpass(f"{label}: ") if secret else input(f"{label}: ").strip()
+        if secret:
+            entered = getpass(f"{label}: ")
+        else:
+            print(f"{label}: ", end="", file=sys.stderr, flush=True)
+            entered = input().strip()
         if entered:
             return entered
         print(f"{label} is required.", file=sys.stderr)
@@ -340,7 +344,8 @@ def _prompt_optional_value(
     if not sys.stdin.isatty():
         return None
 
-    entered = input(f"{label} (optional): ").strip()
+    print(f"{label} (optional): ", end="", file=sys.stderr, flush=True)
+    entered = input().strip()
     return entered or None
 
 

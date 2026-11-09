@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -143,6 +144,37 @@ def test_okta_globalprotect_prints_the_openconnect_cookie_as_json(
         "cookie": "gp-cookie",
     }
     assert cli.session_store.read_device_token("https://vpn.example.edu/") == "dt-1"
+
+
+def test_okta_globalprotect_keeps_interactive_prompts_out_of_json(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    async def fake_sign_in_globalprotect(**kwargs):
+        assert kwargs["username"] == "user@example.com"
+        assert kwargs["password"] == "secret"
+        assert kwargs["totp_secret"] is None
+        return GlobalProtectResult(
+            "gateway", "user@example.com", "prelogin-cookie", "gp-cookie", None
+        )
+
+    stdin = io.StringIO("\nuser@example.com\n\n")
+    monkeypatch.setattr(stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli.sys, "stdin", stdin)
+    monkeypatch.setattr(cli, "sign_in_globalprotect", fake_sign_in_globalprotect)
+    monkeypatch.setattr(cli.session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(cli, "load_settings", lambda: AppSettings())
+    monkeypatch.setattr(cli, "load_stored_credentials", lambda: StoredCredentials())
+    for name in ["OKTA_USERNAME", "OKTA_PASSWORD", "OKTA_TOTP_SECRET"]:
+        monkeypatch.delenv(name, raising=False)
+
+    exit_code = cli.main(["globalprotect", "vpn.example.edu", "--password", "secret"])
+
+    assert exit_code == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out)["cookie"] == "gp-cookie"
+    assert "Username: " in output.err
+    assert "Username is required." in output.err
+    assert "TOTP secret (optional): " in output.err
 
 
 def test_okta_defaults_to_stored_config(monkeypatch) -> None:

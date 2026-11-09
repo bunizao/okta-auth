@@ -333,14 +333,16 @@ into an MCP client.
 import asyncio
 from okta_auth import OktaSignInError, sign_in, sign_in_globalprotect, totp
 
-result = asyncio.run(sign_in(
-    url="https://portal.company.com/login",
-    username="you@company.com",
-    password="...",
-    totp_secret="JBSWY3DPEHPK3PXP",
-    device_token=None,  # pass result.device_token back next time
-))
-result.cookies       # the target site's cookies
+result = asyncio.run(
+    sign_in(
+        url="https://portal.company.com/login",
+        username="you@company.com",
+        password="...",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        device_token=None,  # pass result.device_token back next time
+    )
+)
+result.cookies  # the target site's cookies
 result.device_token  # Okta's DT cookie
 ```
 
