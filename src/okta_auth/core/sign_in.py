@@ -23,6 +23,12 @@ class SignInResult:
     cookies: list[Cookie]
     # Okta's DT cookie. Store it and pass it back next time.
     device_token: str | None
+    # Where the SAML post landed, redirects followed. It can carry one-time
+    # tokens (OnTrack's authToken): read it, never log it.
+    landing_url: str
+    # Okta's session cookies, without DT. Pass them back as `okta_session` to sign
+    # in to another app without answering MFA again.
+    okta_session: list[Cookie]
 
 
 # Reports what sign-in is doing, for people watching a terminal. Messages name hosts
@@ -45,6 +51,7 @@ async def sign_in(
     password: str,
     totp_secret: str | None = None,
     device_token: str | None = None,
+    okta_session: list[Cookie] | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
     now: Callable[[], float] = time.time,
     progress: Progress = quiet,
@@ -53,10 +60,14 @@ async def sign_in(
     HTTP: no browser. Raises OktaSignInError; see its codes for what's retryable.
 
     url: a page on the target site that sends signed-out visitors to Okta,
-        e.g. https://learning.monash.edu/login/index.php
+        e.g. https://learning.monash.edu/login/index.php. Or an Okta app link,
+        e.g. https://example.okta.com/app/example/exk1/sso/saml, for an app whose
+        sign-in starts at Okta (IdP-initiated SAML).
     totp_secret: base32 secret of a Google Authenticator (or Okta Verify TOTP) enrollment.
     device_token: the `device_token` from an earlier sign-in. Okta keys "new device"
         checks and sign-on emails to it.
+    okta_session: `okta_session` from an earlier result. While that session lasts,
+        Okta skips the password and one-time code. Each cookie only goes to its own host.
     transport: an httpx transport, for tests.
     now: seconds since the epoch. Drives TOTP codes and cookie expiry.
     progress: called with a short message before each step.
@@ -68,8 +79,31 @@ async def sign_in(
 
     credentials = Credentials(username, password, totp_secret)
     async with Client(transport, now, device_token) as client:
+        for cookie in okta_session or []:
+            client.jar.set(cookie)
+
         progress(f"Opening {target.host}")
         acs = await hand_off(client, await client.follow(target), credentials, now, progress)
+        idp_cookies = client.jar.list(client.idp_host) if client.idp_host else []
+
+        def signed_in(host: str) -> SignInResult:
+            return SignInResult(
+                cookies=client.jar.list(host),
+                device_token=device_token_of(client, device_token),
+                landing_url=str(acs.url),
+                okta_session=[cookie for cookie in idp_cookies if cookie.name != "DT"],
+            )
+
+        # An Okta app link: the app has no page of its own to ask again, so where
+        # the SAML post landed is the only evidence.
+        if client.idp_host == target.host:
+            if not _landed_in_app(acs, target.host):
+                raise OktaSignInError(
+                    "handoff_failed",
+                    f"{where(target)} led to {where(acs.url)} ({acs.status}) "
+                    "instead of the app after the SAML post",
+                )
+            return signed_in(acs.url.host)
 
         progress(f"Checking that {target.host} is signed in")
         # The target must finish with a successful response, without a login form.
@@ -86,10 +120,18 @@ async def sign_in(
                 f"{where(check.url)}, {check.status})",
             )
 
-        return SignInResult(
-            cookies=client.jar.list(target.host),
-            device_token=device_token_of(client, device_token),
-        )
+        return signed_in(target.host)
+
+
+def _landed_in_app(landing: Page, okta_host: str) -> bool:
+    """Whether an IdP-initiated sign-in reached the app, judged only by the page the
+    SAML post ended on (redirects already followed). `okta_host` is the Okta host
+    the sign-in started at."""
+    # Back at Okta means the app refused the response and sent us round again.
+    if landing.url.host == okta_host:
+        return False
+    # Same bar as the SP-initiated check: a 2xx page that is not a login form.
+    return 200 <= landing.status < 300 and not is_login_page(landing.body)
 
 
 async def hand_off(
@@ -106,6 +148,8 @@ async def hand_off(
         raise http_error(page.status, page.url)
 
     if read_saml_form(page.body):
+        # Okta already had a session and answered with the SAML form straight away.
+        client.use_idp(page.url.host)
         progress(f"{page.url.host} already has a session")
     else:
         state_token = read_state_token(page.body, page.url)

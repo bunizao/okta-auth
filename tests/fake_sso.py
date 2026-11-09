@@ -1,6 +1,7 @@
 """A scripted Okta Identity Engine org (example.okta.com), a Moodle-like SAML
 service provider (learning.example.edu) and a GlobalProtect portal
-(vpn.example.edu), served through an httpx.MockTransport.
+(vpn.example.edu) and an OnTrack-like app that starts sign-in at Okta
+(ontrack.example.edu), served through an httpx.MockTransport.
 
 A port of tests/fake-sso.ts in the TypeScript reference. Keep the two in step.
 """
@@ -29,12 +30,19 @@ STATE_TOKEN = "02.id.abc-def"
 SAML_RESPONSE = "PHNhbWw+"
 GP = "vpn.example.edu"
 GP_COOKIE = "gp-cookie-1"
+ONTRACK = "ontrack.example.edu"
+# OnTrack's sign-in starts at this Okta app link (IdP-initiated SAML).
+ONTRACK_APP = f"https://{OKTA}/app/example_ontrack/exk3/sso/saml"
+ONTRACK_AUTH_TOKEN = "one-time-1"
+ONTRACK_LANDING = f"https://{ONTRACK}/sign_in?authToken={ONTRACK_AUTH_TOKEN}&username=student"
 
 RELAY_STATE = f"https://{SP}/my/"
 IDX = "application/ion+json; okta-version=1.0.0"
 APP_PATH = "/app/example_moodle/exk1/sso/saml"
 ACS_PATH = f"/auth/saml2/sp/saml2-acs.php/{SP}"
 GP_APP_PATH = "/app/example_gp/exk2/sso/saml"
+ONTRACK_APP_PATH = httpx.URL(ONTRACK_APP).path
+ONTRACK_ACS_PATH = "/api/auth/jwt"
 GP_ACS_PATH = "/SAML20/SP/ACS"
 GP_RELAY_STATE = "gp-relay"
 PRELOGIN_PATHS = {"gateway": "/ssl-vpn/prelogin.esp", "portal": "/global-protect/prelogin.esp"}
@@ -150,7 +158,24 @@ class FakeSso:
             return self._okta(request)
         if request.url.host == GP:
             return self._global_protect(request)
+        if request.url.host == ONTRACK:
+            return self._ontrack(request)
         return httpx.Response(502, text="unknown host")
+
+    def _ontrack(self, request: RecordedRequest) -> httpx.Response:
+        """Doubtfire takes the SAML response at its API and sends the browser to the
+        SPA with a one-time token in the query, which the SPA would then spend."""
+        if request.method == "POST" and request.url.path == ONTRACK_ACS_PATH:
+            accepted = (
+                not self.options.sp_rejects
+                and _form(request.body).get("SAMLResponse") == SAML_RESPONSE
+            )
+            if not accepted:
+                return httpx.Response(401, text="unauthorized")
+            return _redirect(ONTRACK_LANDING, ["doubtfire=anon; Path=/; Secure; HttpOnly"])
+        if request.method == "GET" and request.url.path == "/sign_in":
+            return _html("<app-root></app-root>")
+        return httpx.Response(404, text="not found")
 
     def _service_provider(self, request: RecordedRequest) -> httpx.Response:
         method, url, cookies = request.method, request.url, request.cookies
@@ -199,14 +224,14 @@ class FakeSso:
             cookie_lines.append("JSESSIONID=j-1; Path=/; Secure; HttpOnly")
         has_session = self.options.okta_session or cookies.get("sid") == "okta-session"
 
-        if (method == "GET" and url.path == APP_PATH) or url.path == GP_APP_PATH:
+        app_link = method == "GET" and url.path in (APP_PATH, ONTRACK_APP_PATH)
+        if app_link or url.path == GP_APP_PATH:
             if url.path == GP_APP_PATH and method == "POST":
                 if _form(request.body).get("SAMLRequest") != "gprequest":
                     return httpx.Response(400, text="bad request")
             self._app_path = url.path
             if has_session:
-                page = gp_saml_form_page() if self._app_path == GP_APP_PATH else saml_form_page()
-                return _html(page, cookie_lines)
+                return _html(_saml_form_for(self._app_path), cookie_lines)
             return _html("<script>var stateToken = '02.id.abc\\x2Ddef';</script>", cookie_lines)
         if method == "GET" and url.path == "/login/token/redirect":
             return _redirect(
@@ -355,6 +380,22 @@ def saml_form_page() -> str:
 <form id="appForm" action="{entities(f"https://{SP}{ACS_PATH}")}" method="POST">
 <input name="SAMLResponse" type="hidden" value="{entities(SAML_RESPONSE)}"/>
 <input name="RelayState" type="hidden" value="{entities(RELAY_STATE)}"/>
+</form></body></html>"""
+
+
+def _saml_form_for(app_path: str) -> str:
+    if app_path == GP_APP_PATH:
+        return gp_saml_form_page()
+    if app_path == ONTRACK_APP_PATH:
+        return ontrack_saml_form_page()
+    return saml_form_page()
+
+
+def ontrack_saml_form_page() -> str:
+    """IdP-initiated: no RelayState, nothing for the app to match a request against."""
+    return f"""<html><body onload="document.forms[0].submit()">
+<form id="appForm" action="https://{ONTRACK}{ONTRACK_ACS_PATH}" method="POST">
+<input name="SAMLResponse" type="hidden" value="{SAML_RESPONSE}"/>
 </form></body></html>"""
 
 

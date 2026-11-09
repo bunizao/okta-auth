@@ -16,6 +16,10 @@ import pytest
 
 from fake_sso import (
     OKTA,
+    ONTRACK,
+    ONTRACK_APP,
+    ONTRACK_AUTH_TOKEN,
+    ONTRACK_LANDING,
     PASSWORD,
     SP,
     STATE_TOKEN,
@@ -79,6 +83,8 @@ def expect_no_secrets(error: BaseException) -> None:
         "j-1",
         "dt-1",
         "SAMLRequest=request",
+        ONTRACK_AUTH_TOKEN,
+        "okta-session",
     ]:
         assert secret not in text
 
@@ -220,6 +226,61 @@ def test_skips_idx_when_okta_already_has_a_session() -> None:
 
     assert idx_calls(fake.requests) == []
     assert next(c.value for c in result.cookies if c.name == "MoodleSession") == "authed"
+
+
+def test_returns_where_the_saml_post_landed() -> None:
+    _, run = setup()
+    assert run().landing_url == f"https://{SP}/my/"
+
+
+def test_starts_at_an_okta_app_link_and_returns_the_app_s_landing_url_and_cookies() -> None:
+    fake, run = setup()
+    result = run(url=ONTRACK_APP)
+
+    assert result.landing_url == ONTRACK_LANDING
+    assert [(c.name, c.domain) for c in result.cookies] == [("doubtfire", ONTRACK)]
+    assert len(idx_calls(fake.requests)) == 5
+    assert not any(r.url.host == SP for r in fake.requests)
+
+
+def test_sends_the_device_token_to_okta_on_an_okta_app_link() -> None:
+    fake, run = setup()
+    run(url=ONTRACK_APP, device_token="dt-known")
+
+    assert all(r.cookies.get("DT") == "dt-known" for r in idx_calls(fake.requests))
+    assert all("DT" not in r.cookies for r in fake.requests if r.url.host == ONTRACK)
+
+
+def test_reports_handoff_failed_when_the_app_behind_an_okta_app_link_refuses_the_saml_post() -> (
+    None
+):
+    _, run = setup({"sp_rejects": True})
+    error = rejection(lambda: run(url=ONTRACK_APP))
+
+    assert error.code == "handoff_failed"
+    assert ONTRACK in str(error)
+    expect_no_secrets(error)
+
+
+def test_returns_okta_s_session_cookies_without_the_device_token() -> None:
+    _, run = setup()
+    result = run()
+
+    assert [(c.name, c.domain) for c in result.okta_session] == [
+        ("JSESSIONID", OKTA),
+        ("sid", OKTA),
+    ]
+
+
+def test_reuses_an_okta_session_to_sign_in_to_a_second_app_without_mfa() -> None:
+    fake, run = setup()
+    first = run()
+    answered = len(idx_calls(fake.requests))
+    second = run(url=ONTRACK_APP, okta_session=first.okta_session)
+
+    assert len(idx_calls(fake.requests)) == answered
+    assert second.landing_url == ONTRACK_LANDING
+    assert [r for r in fake.requests if r.url.host != OKTA and "sid" in r.cookies] == []
 
 
 def test_reports_handoff_failed_when_the_service_provider_rejects_the_saml_response() -> None:
