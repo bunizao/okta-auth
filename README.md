@@ -345,10 +345,35 @@ result = asyncio.run(
 )
 result.cookies  # the target site's cookies
 result.device_token  # Okta's DT cookie
+result.landing_url  # where the SAML post landed; may carry one-time tokens
+result.okta_session  # Okta's session cookies, without DT
 ```
 
 `sign_in` raises `OktaSignInError` with a `code`, and `ValueError` for bad input.
 It never retries.
+
+### Apps that start at Okta
+
+Some apps (OnTrack, for one) have no page that redirects to Okta: sign-in starts
+at the Okta app link, `https://<org>.okta.com/app/<name>/<id>/sso/saml`, and the
+app hands back a one-time token in the URL it redirects to. Pass the app link as
+`url`. `sign_in` then succeeds when the SAML post leaves Okta and ends on a 2xx
+page that is not a login form, returns that site's cookies, and puts the final
+URL in `landing_url`. Read the token from there; never log it.
+
+### Several apps, one MFA answer
+
+Pass `okta_session` from one result into the next `sign_in` and Okta skips the
+password and one-time code while its session lasts. Without it, two sign-ins
+inside the same 30-second window would send the same TOTP code twice, and Okta
+refuses a reused code with `passcode_rejected`.
+
+```python
+moodle = await sign_in(url=moodle_login, **credentials, device_token=token)
+ontrack = await sign_in(
+    url=ontrack_app_link, **credentials, device_token=token, okta_session=moodle.okta_session
+)
+```
 
 ## Security
 
