@@ -15,6 +15,8 @@ export interface GlobalProtectOptions {
   username: string;
   password: string;
   totpSecret?: string;
+  // As for signIn: the current TOTP code, from a password manager.
+  totpCode?: () => Promise<string>;
   deviceToken?: string;
   fetch?: Fetch;
   now?: () => number;
