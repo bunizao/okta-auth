@@ -147,3 +147,14 @@ def test_deleting_a_session_keeps_the_device_token(tmp_path, monkeypatch) -> Non
     assert json.loads((tmp_path / "device-tokens.json").read_text()) == {
         "portal.example.com": "dt-1"
     }
+
+
+def test_saves_an_okta_app_link_s_session_under_the_site_it_landed_on() -> None:
+    app_link = "https://example.okta.com/app/example_ontrack/exk3/sso/saml"
+    url_a = "https://learning.example.edu/login/index.php"
+    doubtfire = Cookie(name="doubtfire", value="x", domain="ontrack.example.edu")
+    moodle = Cookie(name="MoodleSession", value="x", domain="learning.example.edu")
+
+    assert session_store.session_url(app_link, [doubtfire]) == "https://ontrack.example.edu/"
+    assert session_store.session_url(url_a, [moodle]) == url_a
+    assert session_store.session_url(app_link, []) == app_link

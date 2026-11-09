@@ -78,6 +78,13 @@ def save_session(url: str, cookies: List[Cookie]) -> str:
     return key
 
 
+def session_url(url: str, cookies: List[Cookie]) -> str:
+    """The URL a signed-in session is saved under. An Okta app link signs in to the
+    site the SAML post landed on, so the cookies belong to that site, not to Okta."""
+    site = cookies[0].domain if cookies else None
+    return f"https://{site}/" if site and site != urlparse(url).hostname else url
+
+
 def load_cookies(url: str) -> List[Cookie]:
     """The stored cookies the URL's own host set and that are still live.
 

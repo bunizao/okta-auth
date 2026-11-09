@@ -358,7 +358,9 @@ def _prompt_optional_value(
 
 
 def _format_login_message(result: dict[str, Any]) -> str:
-    session_path = session_store.get_session_path(result["url"])
+    # An Okta app link's session is saved under the site it landed on.
+    domain_key = result.get("domain_key")
+    session_path = session_store.get_session_path(f"https://{domain_key}/") if domain_key else None
     message = result["message"]
     if session_path:
         return (
