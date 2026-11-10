@@ -29,7 +29,7 @@ def install_fake_op(
         cmd: list[str], *, input: str, check: bool, capture_output: bool, text: bool, timeout: int
     ) -> Any:
         assert cmd[0] == "/usr/local/bin/op" and check and capture_output and text
-        assert timeout == 20
+        assert timeout == onepassword.TIMEOUT_SECONDS
         calls.append(cmd[1:])
         if fail:
             raise subprocess.CalledProcessError(1, cmd, output="", stderr="op: dismissed")
