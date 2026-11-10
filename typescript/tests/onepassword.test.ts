@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readConfig, saveOpConfig } from "../src/cli/config.js";
 import { readCredentials } from "../src/cli/credentials.js";
-import { itemRefs, OpError, rankOktaItems, readTotpCode, totpSecretOf, type RunOp } from "../src/cli/onepassword.js";
+import { itemRefs, OpError, rankOktaItems, readRefs, readTotpCode, runOp, totpSecretOf, type RunOp } from "../src/cli/onepassword.js";
 import { totp } from "../src/index.js";
 
 const SECRET = "JBSWY3DPEHPK3PXP";
@@ -180,5 +180,25 @@ describe("1Password setup helpers", () => {
     expect(totpSecretOf(`otpauth://totp/Okta?secret=${SECRET}&digits=6`)).toBe(SECRET);
     expect(totpSecretOf(` ${SECRET}\n`)).toBe(SECRET);
     expect(() => totpSecretOf("otpauth://totp/Okta?issuer=x")).toThrow(TypeError);
+  });
+});
+
+describe("runOp", () => {
+  it("hands op inject its references in a file, since op won't read Node's stdin", async () => {
+    // Like the real op: stdin from Node is a socket, which op takes for no data.
+    const bin = join(home, "bin");
+    await mkdir(bin);
+    await writeFile(
+      join(bin, "op"),
+      '#!/bin/sh\n[ "$1" = inject ] && [ "$2" = --in-file ] || { echo "expected data on stdin but none found" >&2; exit 1; }\nsed -E "s/[{][{] op:[/][/]Private[/]Okta[/]([a-z]+) [}][}]/value-of-\\1/" "$3"\n',
+    );
+    await chmod(join(bin, "op"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      expect(await readRefs([REFS.OKTA_USERNAME, REFS.OKTA_PASSWORD], runOp)).toEqual(["value-of-username", "value-of-password"]);
+    } finally {
+      process.env.PATH = path;
+    }
   });
 });

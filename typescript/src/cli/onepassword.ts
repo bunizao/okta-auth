@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { totp } from "../totp.js";
 
 // Talks to the 1Password CLI. Errors say why op failed, never what it printed:
@@ -18,17 +21,32 @@ export class OpError extends Error {
   }
 }
 
-export const runOp: RunOp = (args, stdin) =>
-  new Promise((resolve, reject) => {
-    const child = execFile("op", args, { timeout: TIMEOUT_MS, maxBuffer: 4 << 20 }, (error, stdout) => {
+export const runOp: RunOp = async (args, stdin) => {
+  // op won't read Node's stdin: Node hands children a socket, and op only reads
+  // a pipe or a file ("expected data on stdin but none found"). So the input,
+  // which only ever holds op:// references, goes through a private temp file.
+  if (stdin === undefined) return execOp(args);
+  const dir = await mkdtemp(join(tmpdir(), "okta-auth-op-"));
+  try {
+    const file = join(dir, "input");
+    await writeFile(file, stdin, { mode: 0o600 });
+    return await execOp([...args, "--in-file", file]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+};
+
+function execOp(args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile("op", args, { timeout: TIMEOUT_MS, maxBuffer: 4 << 20 }, (error, stdout) => {
       if (!error) return resolve(stdout);
       const failure = error as NodeJS.ErrnoException & { killed?: boolean; code?: unknown };
       if (failure.code === "ENOENT") reject(new OpError("the op command is not installed"));
       else if (failure.killed) reject(new OpError(`op ${args[0]} timed out after ${TIMEOUT_MS / 1000}s`));
       else reject(new OpError(`op ${args[0]} exited with status ${String(failure.code)}`, Number(failure.code)));
-    });
-    child.stdin?.end(stdin ?? "");
+    }).stdin?.end();
   });
+}
 
 export function isOpRef(value: string): boolean {
   return value.startsWith("op://");
