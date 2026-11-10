@@ -1,6 +1,6 @@
 {
   "name": "okta-auth-cli",
-  "version": "0.3.0-rc.0",
+  "version": "0.3.0",
   "description": "Sign in through Okta Identity Engine with plain HTTP (no browser), from Node, Bun or Cloudflare Workers, plus a small CLI",
   "license": "MIT",
   "type": "module",
