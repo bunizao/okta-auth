@@ -8,7 +8,18 @@ import time
 import httpx
 import pytest
 
-from fake_sso import OKTA, PASSWORD, SP, TARGET, USERNAME, FakeOptions, fake_sso
+from fake_sso import (
+    OKTA,
+    ONTRACK,
+    ONTRACK_APP,
+    ONTRACK_LANDING,
+    PASSWORD,
+    SP,
+    TARGET,
+    USERNAME,
+    FakeOptions,
+    fake_sso,
+)
 from okta_auth.auth import login, session_store
 from okta_auth.core import Cookie
 
@@ -141,3 +152,29 @@ def test_verify_session_rejects_an_unresolved_redirect() -> None:
     result = asyncio.run(login.verify_session(TARGET, transport=transport))
 
     assert result["valid"] is False
+
+
+def test_saves_no_session_for_an_app_that_sets_no_cookies_but_keeps_the_device_token(
+    store,
+) -> None:
+    # Like the real OnTrack: a one-time token in the landing URL, no cookies.
+    fake = fake_sso(FakeOptions(now=time.time, okta_session=True))
+    fake.set_override(
+        lambda request: (
+            httpx.Response(302, headers={"location": ONTRACK_LANDING})
+            if request.method == "POST"
+            and request.url.host == ONTRACK
+            and request.url.path == "/api/auth/jwt"
+            else None
+        )
+    )
+
+    result = asyncio.run(
+        login.perform_login(ONTRACK_APP, USERNAME, PASSWORD, transport=fake.transport)
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "handoff_failed"
+    assert "authToken" not in result["message"]
+    assert session_store.list_sessions() == []
+    assert session_store.read_device_token(ONTRACK_APP) == "dt-1"

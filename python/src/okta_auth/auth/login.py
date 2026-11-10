@@ -53,6 +53,17 @@ async def perform_login(
         return _login_failure(url, str(error), None)
 
     session_store.save_device_token(url, result.device_token)
+    # Some apps (OnTrack) hand over a one-time token in the landing URL and set no
+    # cookies. Saving that would file an empty session under Okta's host.
+    if not result.cookies:
+        landing = httpx.URL(result.landing_url).host
+        return _login_failure(
+            url,
+            f"handoff_failed: signed in, but {landing} set no cookies, so there is no session "
+            "to save (an app that hands over a token in the landing URL needs the "
+            "library's landing_url)",
+            "handoff_failed",
+        )
     domain_key = session_store.save_session(
         session_store.session_url(url, result.cookies, result.landing_url), result.cookies
     )

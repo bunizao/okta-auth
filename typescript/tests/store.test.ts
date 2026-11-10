@@ -12,7 +12,9 @@ import {
   saveSession,
   sessionUrl,
 } from "../src/cli/store.js";
-import type { Cookie } from "../src/index.js";
+import { signInAndSave } from "../src/cli/login.js";
+import { OktaSignInError, type Cookie } from "../src/index.js";
+import { fakeSso, ONTRACK, ONTRACK_APP, ONTRACK_LANDING, PASSWORD, USERNAME } from "./fake-sso.js";
 
 const URL_A = "https://learning.example.edu/login/index.php";
 const cookie = (name: string, domain = "learning.example.edu", expires?: number): Cookie => ({
@@ -98,5 +100,25 @@ describe("session store", () => {
 
     await saveSession(url, [cookie("doubtfire", "ontrack.example.edu")]);
     expect((await readSession("https://ontrack.example.edu:8443/api"))?.cookies.map((c) => c.name)).toEqual(["doubtfire"]);
+  });
+
+  it("saves no session for an app that sets no cookies, but keeps the device token", async () => {
+    // Like the real OnTrack: a one-time token in the landing URL, no cookies.
+    const fake = fakeSso({ now: Date.now, oktaSession: true });
+    fake.setOverride(({ method, url }) =>
+      method === "POST" && url.hostname === ONTRACK && url.pathname === "/api/auth/jwt"
+        ? new Response(null, { status: 302, headers: { location: ONTRACK_LANDING } })
+        : undefined,
+    );
+    const error = await signInAndSave(ONTRACK_APP, { username: USERNAME, password: PASSWORD }, () => {}, fake.fetch).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    expect(error).toBeInstanceOf(OktaSignInError);
+    expect((error as OktaSignInError).code).toBe("handoff_failed");
+    expect((error as OktaSignInError).message).not.toContain("authToken");
+    expect(await listSessions()).toEqual([]);
+    expect(await readDeviceToken(ONTRACK_APP)).toBe("dt-1");
   });
 });

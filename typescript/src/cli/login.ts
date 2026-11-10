@@ -1,4 +1,4 @@
-import { signIn, type Fetch, type Progress } from "../index.js";
+import { OktaSignInError, signIn, type Fetch, type Progress } from "../index.js";
 import { readDeviceToken, saveDeviceToken, saveSession, sessionUrl } from "./store.js";
 
 export interface LoginCredentials {
@@ -17,8 +17,17 @@ export async function signInAndSave(
   fetch?: Fetch,
 ): Promise<{ host: string; cookies: number; file: string }> {
   const result = await signIn({ url, ...credentials, deviceToken: await readDeviceToken(url), onProgress, fetch });
+  await saveDeviceToken(url, result.deviceToken);
+  // Some apps (OnTrack) hand over a one-time token in the landing URL and set no
+  // cookies. Saving that would file an empty session under Okta's host.
+  if (!result.cookies.length) {
+    throw new OktaSignInError(
+      "handoff_failed",
+      `signed in, but ${new URL(result.landingUrl).hostname} set no cookies, so there is no session to save ` +
+        "(an app that hands over a token in the landing URL needs the library's landingUrl)",
+    );
+  }
   const saveUrl = sessionUrl(url, result.cookies, result.landingUrl);
   const file = await saveSession(saveUrl, result.cookies);
-  await saveDeviceToken(url, result.deviceToken);
   return { host: new URL(saveUrl).host, cookies: result.cookies.length, file };
 }
