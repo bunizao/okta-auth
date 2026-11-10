@@ -7,7 +7,7 @@
 Identity Engine over plain HTTP. No browser. It has two entry points:
 
 - `okta`: interactive CLI for humans
-- `okta-auth`: MCP server for AI agents that reuse saved sessions
+- `okta-auth`: MCP server that reuses saved sessions
 
 MFA is answered with a TOTP code (Google Authenticator, or Okta Verify's code).
 Push-only MFA and Okta Classic Engine orgs are not supported.
@@ -81,8 +81,8 @@ retries on its own: repeated attempts can lock the account.
 
 ### 3. Reuse the session from MCP
 
-Once configured, AI agents can authenticate with the saved session or with the
-credential provider you configured.
+Once configured, the `okta-auth` MCP server signs in with the saved session or
+with the credential provider you configured.
 
 ## TOTP Secret
 
@@ -197,7 +197,7 @@ op run --env-file=$HOME/.okta-auth/op.env -- uvx --from okta-auth-cli okta-auth
 
 ### Programs that sign in by themselves
 
-A Worker that keeps an app signed in on its own (an OnTrack or Moodle MCP) needs
+A Worker that keeps an app signed in on its own (a scheduled job or a remote service) needs
 the password and TOTP secret themselves, not a session:
 
 ```bash
@@ -372,7 +372,7 @@ Okta asks for a code.
 
 ### Apps that start at Okta
 
-Some apps (OnTrack, for one) have no page that redirects to Okta: sign-in starts
+Some apps have no page that redirects to Okta: sign-in starts
 at the Okta app link, `https://<org>.okta.com/app/<name>/<id>/sso/saml`, and the
 app hands back a one-time token in the URL it redirects to. Pass the app link as
 `url`. `sign_in` then succeeds when the SAML post leaves Okta and ends on a 2xx
@@ -387,9 +387,9 @@ inside the same 30-second window would send the same TOTP code twice, and Okta
 refuses a reused code with `passcode_rejected`.
 
 ```python
-moodle = await sign_in(url=moodle_login, **credentials, device_token=token)
-ontrack = await sign_in(
-    url=ontrack_app_link, **credentials, device_token=token, okta_session=moodle.okta_session
+first = await sign_in(url=app_a, **credentials, device_token=token)
+second = await sign_in(
+    url=app_b, **credentials, device_token=token, okta_session=first.okta_session
 )
 ```
 

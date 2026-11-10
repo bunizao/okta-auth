@@ -24,14 +24,14 @@ The package holds both the library and the `okta-auth` command.
 import { OktaSignInError, signIn } from "okta-auth-cli";
 
 const { cookies, deviceToken } = await signIn({
-  url: "https://learning.monash.edu/login/index.php",
+  url: "https://app.example.com/login",
   username: env.OKTA_USERNAME,
   password: env.OKTA_PASSWORD,
   totpSecret: env.OKTA_TOTP_SECRET,
   deviceToken: await storage.get("okta-device-token"), // optional, see below
 });
 
-const session = cookies.find((cookie) => cookie.name === "MoodleSession");
+const session = cookies.find((cookie) => cookie.name === "session");
 if (deviceToken) await storage.put("okta-device-token", deviceToken);
 ```
 
@@ -106,7 +106,7 @@ every time. Store `deviceToken` and pass it back. It goes only to the Okta host.
 
 ### Apps that start at Okta
 
-Some apps (OnTrack, for one) have no page that redirects to Okta: sign-in starts
+Some apps have no page that redirects to Okta: sign-in starts
 at the Okta app link, `https://<org>.okta.com/app/<name>/<id>/sso/saml`, and
 the app hands back a one-time token in the URL it redirects to. Pass the app link
 as `url`. `signIn` then succeeds when the SAML post leaves Okta and ends on a
@@ -121,8 +121,8 @@ inside the same 30-second window would send the same TOTP code twice, and Okta
 refuses a reused code with `passcode_rejected`.
 
 ```ts
-const moodle = await signIn({ url: moodleLogin, ...credentials, deviceToken });
-const ontrack = await signIn({ url: ontrackAppLink, ...credentials, deviceToken, oktaSession: moodle.oktaSession });
+const first = await signIn({ url: appA, ...credentials, deviceToken });
+const second = await signIn({ url: appB, ...credentials, deviceToken, oktaSession: first.oktaSession });
 ```
 
 ### GlobalProtect
@@ -135,7 +135,7 @@ It replaces `gp-saml-gui` or a headless browser.
 import { signInGlobalProtect } from "okta-auth-cli";
 
 const gp = await signInGlobalProtect({
-  server: "vpn.gp.monash.edu",
+  server: "vpn.example.com",
   username, password, totpSecret, deviceToken,
 });
 // gp: { interface: "gateway", user, cookieName: "prelogin-cookie", cookie, deviceToken }
@@ -143,7 +143,7 @@ const gp = await signInGlobalProtect({
 
 ```ts
 interface GlobalProtectOptions {
-  server: string;                    // host only, e.g. vpn.gp.monash.edu
+  server: string;                    // host only, e.g. vpn.example.com
   interface?: "gateway" | "portal";  // default: gateway, then portal
   // username, password, totpSecret, deviceToken, fetch, now: as for signIn
 }
@@ -160,7 +160,7 @@ The cookie works once. Pass it to OpenConnect on stdin:
 
 ```bash
 openconnect --protocol=gp --user="$user" --usergroup="gateway:prelogin-cookie" \
-  --passwd-on-stdin vpn.gp.monash.edu <<<"$cookie"
+  --passwd-on-stdin vpn.example.com <<<"$cookie"
 ```
 
 ### Cloudflare Workers
@@ -178,9 +178,9 @@ wrangler secret put OKTA_TOTP_SECRET
 ## CLI
 
 ```bash
-okta-auth login https://learning.monash.edu/login/index.php
+okta-auth login https://app.example.com/login
 okta-auth status
-okta-auth cookies https://learning.monash.edu/   # prints a Cookie header
+okta-auth cookies https://app.example.com/   # prints a Cookie header
 okta-auth logout                                 # or: okta-auth logout <url>
 ```
 
@@ -241,7 +241,7 @@ setup keeps working.
 
 ### Programs that sign in by themselves
 
-A Worker that keeps an app signed in on its own (an OnTrack or Moodle MCP)
+A Worker that keeps an app signed in on its own (a scheduled job or a remote service)
 needs the password and TOTP secret themselves, not a session:
 
 ```bash
@@ -258,7 +258,7 @@ For scripts, `--credentials-stdin` takes the credentials only from stdin, as
 argv and the environment:
 
 ```bash
-security find-generic-password -s my-service -w | okta-auth globalprotect vpn.gp.monash.edu --credentials-stdin
+security find-generic-password -s my-service -w | okta-auth globalprotect vpn.example.com --credentials-stdin
 ```
 
 ### Exit codes
@@ -318,9 +318,8 @@ request must be HTTPS. Redirects are capped at 10 and IDX steps at 8.
 - The package is now on npm. The command is `okta-auth`, not `okta`.
 - The Playwright engine is gone, and so are `--headed`, `--timeout-ms` and the
   browser settings.
-- The MCP server is gone. Agents can run `okta-auth cookies <url>`; programs
-  should call `signIn()`. Piping session cookies into a model's context was a
-  leak waiting to happen.
+- The MCP server is gone. Other tools can run `okta-auth cookies <url>`; programs
+  should call `signIn()`.
 - `okta config` is gone. Use environment variables or the `security` commands
   above. The Keychain entries it wrote still work.
 - Saved sessions in `~/.okta-auth/sessions` still read. `okta-auth cookies`
