@@ -1,15 +1,23 @@
 version: 2
 updates:
+  # A library's floors say what it works with, not what is newest. Raise one
+  # only when the old range no longer allows the update.
   - package-ecosystem: "pip"
     directory: "/python"
     schedule:
       interval: "weekly"
+    versioning-strategy: increase-if-necessary
     open-pull-requests-limit: 5
   - package-ecosystem: "npm"
     directory: "/typescript"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # @types/node majors follow Node majors. Moving them is a choice about
+      # which Node the code may target, made by hand with engines.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
