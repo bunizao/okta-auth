@@ -8,6 +8,8 @@ export interface Page {
   status: number;
   headers: Headers;
   body: string;
+  // Hosts the redirects passed through before this page, in order.
+  via?: string[];
 }
 
 const MAX_REDIRECTS = 10;
@@ -78,6 +80,7 @@ export class Client {
   // Preserve POSTs on same-origin 307/308 redirects, but never replay a SAML
   // response to a different origin. Ordinary form redirects switch to GET.
   async follow(url: URL, init?: RequestInit): Promise<Page> {
+    const via: string[] = [];
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       const response = await this.send(url, init);
       const location = response.headers.get("location");
@@ -88,11 +91,12 @@ export class Client {
         if (preserve && next.origin !== url.origin && method !== "GET" && method !== "HEAD") {
           throw new OktaSignInError("unexpected_step", `refusing to replay a form to another origin (${where(next)})`);
         }
+        via.push(url.hostname);
         url = next;
         if (!preserve) init = undefined;
         continue;
       }
-      return response;
+      return { ...response, via };
     }
     throw new OktaSignInError("unexpected_step", `more than ${MAX_REDIRECTS} redirects, last at ${where(url)}`);
   }

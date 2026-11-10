@@ -147,6 +147,17 @@ async def next_step(state: IdxState, credentials: Credentials, now: float) -> Id
         )
 
     names = [str(form.get("name")) for form in forms]
+    if "reenroll-authenticator" in names:
+        raise OktaSignInError(
+            "unexpected_step",
+            "Okta says the password has expired; change it in a browser, then sign in again",
+        )
+    if "select-authenticator-enroll" in names or "enroll-authenticator" in names:
+        raise OktaSignInError(
+            "unexpected_step",
+            f"Okta wants a new authenticator set up ({', '.join(names)}); "
+            "set it up in a browser, then sign in again",
+        )
     if "challenge-poll" in names:
         raise OktaSignInError("mfa_unsupported", "Okta is waiting for a push notification")
     raise OktaSignInError(
@@ -199,7 +210,8 @@ def _authenticator_options(state: IdxState, form: dict[str, Any]) -> list[_Authe
         method_type = methods[0] if methods else None
         usable = True
         # Okta Verify can push or show a code; only the code works without a phone in hand.
-        if key == "okta_verify":
+        # Without a methodType field, Okta asks for one in authenticator-verification-data.
+        if key == "okta_verify" and method_field is not None:
             usable = "totp" in methods
             method_type = "totp" if usable else None
         elif method_field is not None and not methods:

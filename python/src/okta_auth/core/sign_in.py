@@ -85,9 +85,19 @@ async def sign_in(
     async with Client(transport, now, device_token) as client:
         for cookie in okta_session or []:
             client.jar.set(cookie)
+        # Okta's session cookies name Okta's host before any request reaches it.
+        if okta_session:
+            client.use_idp(okta_session[0].domain)
 
         progress(f"Opening {target.host}")
-        acs = await hand_off(client, await client.follow(target), credentials, now, progress)
+        first = await _submit_saml_request(client, await client.follow(target))
+        # Okta already had a session and sent us straight back to the app (OIDC apps
+        # do this; SAML apps answer with the SAML form instead).
+        bounced = first.url.host == target.host and any(host != target.host for host in first.via)
+        if bounced and _is_signed_in(first):
+            acs = first
+        else:
+            acs = await hand_off(client, first, credentials, now, progress)
         idp_cookies = client.jar.list(client.idp_host) if client.idp_host else []
 
         def signed_in(host: str) -> SignInResult:
@@ -135,7 +145,28 @@ def _landed_in_app(landing: Page, okta_host: str) -> bool:
     if landing.url.host == okta_host:
         return False
     # Same bar as the SP-initiated check: a 2xx page that is not a login form.
-    return 200 <= landing.status < 300 and not is_login_page(landing.body)
+    return _is_signed_in(landing)
+
+
+def _is_signed_in(page: Page) -> bool:
+    return 200 <= page.status < 300 and not is_login_page(page.body)
+
+
+async def _submit_saml_request(client: Client, page: Page) -> Page:
+    """Some service providers hand their SAML request to Okta in an auto-submitting
+    form (the HTTP-POST binding) instead of a redirect. Submits it as a browser would."""
+    form = read_saml_form(page.body, "SAMLRequest")
+    if not form:
+        return page
+    url = page.url.join(form.action)
+    # The SAMLRequest travels in the body, so Client.send can't spot Okta itself.
+    client.use_idp(url.host)
+    return await client.follow(
+        url,
+        method="POST",
+        headers={"content-type": "application/x-www-form-urlencoded"},
+        body=urlencode(form.fields),
+    )
 
 
 async def hand_off(
@@ -164,6 +195,10 @@ async def hand_off(
         )
 
     form = read_saml_form(page.body)
+    # OIDC and other redirect-based apps: Okta's success link already led back to
+    # the app, which is where the hand-off ends.
+    if not form and client.idp_host and page.url.host != client.idp_host:
+        return page
     if not form:
         raise OktaSignInError(
             "unexpected_step", f"Okta finished without a SAML form at {where(page.url)}"

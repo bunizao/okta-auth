@@ -64,10 +64,16 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
   const now = options.now ?? Date.now;
   const client = new Client(options.fetch ?? ((input, init) => fetch(input, init)), now, options.deviceToken);
   for (const cookie of options.oktaSession ?? []) client.jar.set(cookie);
+  // Okta's session cookies name Okta's host before any request reaches it.
+  if (options.oktaSession?.length) client.useIdp(options.oktaSession[0]!.domain);
 
   const progress = options.onProgress ?? (() => {});
   progress(`Opening ${target.hostname}`);
-  const acs = await handOff(client, await client.follow(target), options, now, progress);
+  const first = await submitSamlRequest(client, await client.follow(target));
+  // Okta already had a session and sent us straight back to the app (OIDC apps
+  // do this; SAML apps answer with the SAML form instead).
+  const bounced = first.url.hostname === target.hostname && (first.via ?? []).some((host) => host !== target.hostname);
+  const acs = bounced && isSignedIn(first) ? first : await handOff(client, first, options, now, progress);
   const signedIn = {
     deviceToken: deviceTokenOf(client, options.deviceToken),
     landingUrl: acs.url.href,
@@ -107,7 +113,26 @@ function landedInApp(landing: Page, oktaHost: string): boolean {
   // Back at Okta means the app refused the response and sent us round again.
   if (landing.url.hostname === oktaHost) return false;
   // Same bar as the SP-initiated check: a 2xx page that is not a login form.
-  return landing.status >= 200 && landing.status < 300 && !isLoginPage(landing.body);
+  return isSignedIn(landing);
+}
+
+function isSignedIn(page: Page): boolean {
+  return page.status >= 200 && page.status < 300 && !isLoginPage(page.body);
+}
+
+// Some service providers hand their SAML request to Okta in an auto-submitting
+// form (the HTTP-POST binding) instead of a redirect. Submit it as a browser would.
+async function submitSamlRequest(client: Client, page: Page): Promise<Page> {
+  const form = readSamlForm(page.body, "SAMLRequest");
+  if (!form) return page;
+  const url = new URL(form.action, page.url);
+  // The SAMLRequest travels in the body, so Client.send can't spot Okta itself.
+  client.useIdp(url.hostname);
+  return client.follow(url, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(form.fields),
+  });
 }
 
 // Takes Okta's first page through sign-in (unless Okta already has a session and
@@ -134,6 +159,9 @@ export async function handOff(
   }
 
   const form = readSamlForm(page.body);
+  // OIDC and other redirect-based apps: Okta's success link already led back to
+  // the app, which is where the hand-off ends.
+  if (!form && client.idpHost && page.url.hostname !== client.idpHost) return page;
   if (!form) {
     throw new OktaSignInError("unexpected_step", `Okta finished without a SAML form at ${where(page.url)}`);
   }

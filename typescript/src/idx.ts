@@ -152,6 +152,15 @@ export async function nextStep(state: IdxState, credentials: Credentials, now: n
   }
 
   const names = forms.map((form) => form.name);
+  if (names.includes("reenroll-authenticator")) {
+    throw new OktaSignInError("unexpected_step", "Okta says the password has expired; change it in a browser, then sign in again");
+  }
+  if (names.includes("select-authenticator-enroll") || names.includes("enroll-authenticator")) {
+    throw new OktaSignInError(
+      "unexpected_step",
+      `Okta wants a new authenticator set up (${names.join(", ")}); set it up in a browser, then sign in again`,
+    );
+  }
   if (names.includes("challenge-poll")) {
     throw new OktaSignInError("mfa_unsupported", "Okta is waiting for a push notification");
   }
@@ -189,7 +198,8 @@ function authenticatorOptions(state: IdxState, form: IdxForm): AuthenticatorOpti
     const methods = methodTypes(methodField);
     let methodType: string | undefined | null = methods[0];
     // Okta Verify can push or show a code; only the code works without a phone in hand.
-    if (key === "okta_verify") methodType = methods.includes("totp") ? "totp" : null;
+    // Without a methodType field, Okta asks for one in authenticator-verification-data.
+    if (key === "okta_verify") methodType = !methodField ? undefined : methods.includes("totp") ? "totp" : null;
     else if (methodField && !methods.length) methodType = null;
     return { key, id: field(fields, "id")?.value, methodType, methods };
   });

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.cookiejar import CookieJar as StdlibCookieJar
 from http.cookiejar import DefaultCookiePolicy
 
@@ -18,6 +18,8 @@ class Page:
     status: int
     headers: httpx.Headers
     body: str
+    # Hosts the redirects passed through before this page, in order.
+    via: list[str] = field(default_factory=list)
 
 
 MAX_REDIRECTS = 10
@@ -128,6 +130,7 @@ class Client:
     ) -> Page:
         """Preserves POSTs on same-origin 307/308 redirects, but never replays a SAML
         response to a different origin. Ordinary form redirects switch to GET."""
+        via: list[str] = []
         for _ in range(MAX_REDIRECTS + 1):
             response = await self.send(url, method=method, headers=headers, body=body)
             location = response.headers.get("location")
@@ -149,12 +152,17 @@ class Client:
                         "unexpected_step",
                         f"refusing to replay a form to another origin ({where(next_url)})",
                     )
+                via.append(url.host)
                 url = next_url
                 if not preserve:
                     method, headers, body = "GET", None, None
                 continue
             return Page(
-                url=url, status=response.status_code, headers=response.headers, body=response.text
+                url=url,
+                status=response.status_code,
+                headers=response.headers,
+                body=response.text,
+                via=via,
             )
         raise OktaSignInError(
             "unexpected_step", f"more than {MAX_REDIRECTS} redirects, last at {where(url)}"
