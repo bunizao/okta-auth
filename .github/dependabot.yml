@@ -1,7 +1,12 @@
 version: 2
 updates:
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "/python"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "npm"
+    directory: "/typescript"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

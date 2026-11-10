@@ -1,0 +1,193 @@
+import json
+
+import httpx
+import pytest
+
+from fake_op import install_fake_op
+from okta_auth import adapter, runtime_credentials
+from okta_auth.auth import login, session_store
+from okta_auth.core import Cookie
+from okta_auth.credential_store import StoredCredentials
+from okta_auth.runtime_credentials import RuntimeCredentials
+from okta_auth.settings import AppSettings
+
+
+def test_get_cookie_value_prefers_exact_target_domain(monkeypatch, tmp_path) -> None:
+    session_path = tmp_path / "session.json"
+    session_path.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "MoodleSession",
+                        "value": "parent",
+                        "domain": ".example.edu",
+                        "path": "/",
+                    },
+                    {
+                        "name": "MoodleSession",
+                        "value": "exact",
+                        "domain": "school.example.edu",
+                        "path": "/",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(adapter, "get_session_path", lambda _url: str(session_path))
+
+    assert adapter.get_cookie_value("https://school.example.edu", "MoodleSession") == "exact"
+
+
+def test_ensure_login_reuses_active_session(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "get_session_path", lambda _url: "/tmp/session.json")
+
+    async def fake_verify_session(**_kwargs):
+        return {
+            "valid": True,
+            "domain_key": "school.example.edu",
+            "message": "Session is active",
+            "url": "https://school.example.edu",
+        }
+
+    monkeypatch.setattr(adapter, "verify_session", fake_verify_session)
+
+    called = {"perform_login": False}
+
+    async def fake_perform_login(**_kwargs):
+        called["perform_login"] = True
+        return {"success": True}
+
+    monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
+
+    result = adapter.ensure_login("https://school.example.edu")
+
+    assert result["success"] is True
+    assert result["performed_login"] is False
+    assert called["perform_login"] is False
+
+
+def test_ensure_login_uses_stored_credentials(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "get_session_path", lambda _url: None)
+    monkeypatch.setattr(
+        runtime_credentials, "load_settings", lambda: AppSettings(credential_provider="keyring")
+    )
+    monkeypatch.setattr(
+        runtime_credentials,
+        "load_stored_credentials",
+        lambda: StoredCredentials(
+            username="user@example.com",
+            password="secret",
+            totp_secret="JBSWY3DPEHPK3PXP",
+        ),
+    )
+
+    async def fake_perform_login(**kwargs):
+        assert kwargs["username"] == "user@example.com"
+        assert kwargs["password"] == "secret"
+        assert kwargs["totp_secret"] == "JBSWY3DPEHPK3PXP"
+        return {
+            "success": True,
+            "domain_key": "school.example.edu",
+            "message": "Session saved",
+            "url": kwargs["url"],
+        }
+
+    monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
+
+    result = adapter.ensure_login("https://school.example.edu")
+
+    assert result["performed_login"] is True
+
+
+def test_ensure_login_reauthenticates_after_a_same_host_login_page(monkeypatch, tmp_path) -> None:
+    url = "https://school.example.edu/login"
+    monkeypatch.setattr(session_store, "SESSIONS_DIR", tmp_path / "sessions")
+    session_store.save_session(url, [Cookie("session", "anon", "school.example.edu")])
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text='<form><input type="password"></form>')
+    )
+
+    async def verify_stored_session(**kwargs):
+        return await login.verify_session(**kwargs, transport=transport)
+
+    async def fake_perform_login(**kwargs):
+        assert kwargs["url"] == url
+        return {"success": True, "url": url}
+
+    monkeypatch.setattr(adapter, "verify_session", verify_stored_session)
+    monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
+    monkeypatch.setattr(
+        adapter,
+        "resolve_credentials",
+        lambda: RuntimeCredentials("test-user", "test-password", None, None, AppSettings()),
+    )
+
+    result = adapter.ensure_login(url)
+
+    assert result["performed_login"] is True
+
+
+def test_ensure_login_reports_missing_credentials(monkeypatch) -> None:
+    monkeypatch.setattr(adapter, "get_session_path", lambda _url: None)
+    monkeypatch.setattr(
+        runtime_credentials,
+        "load_settings",
+        lambda: AppSettings(credential_provider="op", op_env_file="/tmp/op.env"),
+    )
+    monkeypatch.setattr(runtime_credentials, "load_stored_credentials", lambda: StoredCredentials())
+
+    with pytest.raises(adapter.OktaAdapterError) as exc:
+        adapter.ensure_login("https://school.example.edu")
+
+    assert "op run --env-file=/tmp/op.env" in str(exc.value)
+
+
+def test_ensure_login_resolves_op_env_file(monkeypatch, tmp_path) -> None:
+    env_path = tmp_path / "op.env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "OKTA_USERNAME=op://Private/Okta/username",
+                "OKTA_PASSWORD=op://Private/Okta/password",
+                "OKTA_TOTP_SECRET=op://Private/Okta/totp_secret",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(adapter, "get_session_path", lambda _url: None)
+    monkeypatch.delenv("OKTA_USERNAME", raising=False)
+    monkeypatch.delenv("OKTA_PASSWORD", raising=False)
+    monkeypatch.delenv("OKTA_TOTP_SECRET", raising=False)
+    monkeypatch.setattr(
+        runtime_credentials,
+        "load_settings",
+        lambda: AppSettings(credential_provider="op", op_env_file=str(env_path)),
+    )
+    install_fake_op(
+        monkeypatch,
+        {"op://Private/Okta/username": "user@example.com", "op://Private/Okta/password": "secret"},
+        codes={"op://Private/Okta/totp_secret?attribute=otp": "123456"},
+    )
+
+    async def fake_perform_login(**kwargs):
+        assert kwargs["username"] == "user@example.com"
+        assert kwargs["password"] == "secret"
+        # The TOTP secret stays in 1Password: sign-in gets codes from it.
+        assert kwargs["totp_secret"] is None
+        assert await kwargs["totp_code"]() == "123456"
+        return {
+            "success": True,
+            "domain_key": "school.example.edu",
+            "message": "Session saved",
+            "url": kwargs["url"],
+        }
+
+    monkeypatch.setattr(adapter, "perform_login", fake_perform_login)
+
+    result = adapter.ensure_login("https://school.example.edu")
+
+    assert result["performed_login"] is True

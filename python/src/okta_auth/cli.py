@@ -1,0 +1,555 @@
+"""Interactive CLI for Okta login and session management."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from collections.abc import Awaitable, Callable
+from getpass import getpass
+from typing import Any, Sequence
+
+from okta_auth.auth import session_store
+from okta_auth.auth.login import perform_login, verify_session
+from okta_auth.config_wizard import ConfigWizard
+from okta_auth.core import OktaSignInError, sign_in_globalprotect
+from okta_auth.credential_store import (
+    CredentialStoreError,
+    StoredCredentials,
+    clear_credentials,
+    get_store_status,
+)
+from okta_auth.credential_store import load_credentials as load_stored_credentials
+from okta_auth.export import EXPORT_FLAG, export_json, export_refusal
+from okta_auth.runtime_credentials import resolve_credentials
+from okta_auth.settings import (
+    AppSettings,
+    clear_op_env_file,
+    clear_settings,
+    describe_settings,
+    load_settings,
+    uses_keyring,
+)
+from okta_auth.setup_server import open_browser, start_setup
+
+COMMANDS = {
+    "login",
+    "check",
+    "list",
+    "delete",
+    "cookies",
+    "globalprotect",
+    "config",
+    "setup",
+    "export",
+}
+
+# Okta rejected the username or password (EX_NOPERM). A supervising script should
+# stop rather than retry: repeated attempts lock the account.
+EXIT_CREDENTIALS_REJECTED = 77
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="okta",
+        description="Interactive Okta CLI for login and local session management.",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Authenticate to a URL and save the session locally.",
+    )
+    login_parser.add_argument("url", nargs="?", help="Target URL to authenticate against.")
+    login_parser.add_argument("--username", help="Okta username or email.")
+    login_parser.add_argument("--password", help="Okta password.")
+    login_parser.add_argument("--totp-secret", help="Base32 TOTP secret for MFA.")
+    login_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+    # Browser options from before 0.3.0, accepted so existing scripts keep working.
+    login_parser.add_argument("--headed", action="store_true", help=argparse.SUPPRESS)
+    login_parser.add_argument("--timeout-ms", type=int, help=argparse.SUPPRESS)
+    login_parser.add_argument("--settle-ms", type=int, help=argparse.SUPPRESS)
+
+    check_parser = subparsers.add_parser(
+        "check",
+        help="Verify whether a stored session is still valid.",
+    )
+    check_parser.add_argument("url", help="URL to verify.")
+    check_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+    check_parser.add_argument("--timeout-ms", type=int, help=argparse.SUPPRESS)
+
+    list_parser = subparsers.add_parser("list", help="List saved sessions.")
+    list_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+
+    delete_parser = subparsers.add_parser("delete", help="Delete a stored session.")
+    delete_parser.add_argument("url", help="URL whose session should be deleted.")
+    delete_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+
+    cookies_parser = subparsers.add_parser("cookies", help="Show cookies from a stored session.")
+    cookies_parser.add_argument("url", help="URL whose session cookies should be shown.")
+    cookies_parser.add_argument("--domain", help="Optional domain substring filter.")
+    cookies_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+
+    gp_parser = subparsers.add_parser(
+        "globalprotect",
+        help="Sign in to a GlobalProtect portal or gateway; print OpenConnect's one-time cookie.",
+    )
+    gp_parser.add_argument("server", help="Portal or gateway host, e.g. vpn.example.edu.")
+    gp_parser.add_argument(
+        "--interface",
+        choices=["gateway", "portal"],
+        help="Whose prelogin to ask. Default: the gateway's, then the portal's.",
+    )
+    gp_parser.add_argument("--username", help="Okta username or email.")
+    gp_parser.add_argument("--password", help="Okta password.")
+    gp_parser.add_argument("--totp-secret", help="Base32 TOTP secret for MFA.")
+
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Open the interactive credential wizard or inspect stored configuration.",
+    )
+    config_parser.add_argument(
+        "--provider",
+        choices=["keyring", "op"],
+        help="Force the wizard to configure a specific credential provider.",
+    )
+    config_parser.add_argument("--show", action="store_true", help="Show stored config status.")
+    config_parser.add_argument("--reset", action="store_true", help="Delete stored credentials.")
+    config_parser.add_argument("--yes", action="store_true", help="Skip the reset confirmation.")
+    config_parser.add_argument("--json", action="store_true", help="Print raw JSON output.")
+
+    subparsers.add_parser(
+        "setup",
+        help="Choose where your Okta credentials live and try a sign-in, in the browser.",
+    )
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="Print the password and TOTP secret as JSON, for a program that signs in itself.",
+    )
+    export_parser.add_argument(
+        f"--{EXPORT_FLAG}",
+        dest="confirmed",
+        action="store_true",
+        help="Required: says you mean to hand the raw secrets to another program.",
+    )
+
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+
+    if raw_args and raw_args[0] in {"-h", "--help"}:
+        parser.print_help()
+        return 0
+
+    if not raw_args or raw_args[0] not in COMMANDS:
+        raw_args.insert(0, "login")
+
+    args = parser.parse_args(raw_args)
+    return asyncio.run(run_cli(args))
+
+
+async def run_cli(args: argparse.Namespace) -> int:
+    if args.command == "login":
+        return await _run_login(args)
+    if args.command == "check":
+        return await _run_check(args)
+    if args.command == "list":
+        return _run_list(args)
+    if args.command == "delete":
+        return _run_delete(args)
+    if args.command == "cookies":
+        return _run_cookies(args)
+    if args.command == "globalprotect":
+        return await _run_globalprotect(args)
+    if args.command == "config":
+        return _run_config(args)
+    if args.command == "setup":
+        return await _run_setup()
+    if args.command == "export":
+        return _run_export(args)
+    raise AssertionError(f"Unsupported command: {args.command}")
+
+
+async def _run_login(args: argparse.Namespace) -> int:
+    _warn_ignored(args, "headed", "timeout_ms", "settle_ms")
+    stored_settings = load_settings()
+    url = _require_value(args.url or stored_settings.default_url, "Target URL", secret=False)
+    username, password, totp_secret, totp_code = _resolve_credentials(args, stored_settings)
+
+    result = await perform_login(
+        url=url,
+        username=username,
+        password=password,
+        totp_secret=totp_secret,
+        totp_code=totp_code,
+        progress=_show_progress,
+    )
+    exit_code = _print_result(
+        result,
+        use_json=args.json,
+        success_key="success",
+        success_text=_format_login_message(result),
+        failure_text=result["message"],
+    )
+    if result.get("error_code") == "credentials_rejected":
+        return EXIT_CREDENTIALS_REJECTED
+    return exit_code
+
+
+async def _run_globalprotect(args: argparse.Namespace) -> int:
+    """Always prints JSON, for a script that hands `cookie` to OpenConnect on stdin.
+    Nothing is saved but the device token; the cookie works once."""
+    username, password, totp_secret, totp_code = _resolve_credentials(args, load_settings())
+    token_key = f"https://{args.server}/"
+    try:
+        result = await sign_in_globalprotect(
+            server=args.server,
+            interface=args.interface,
+            username=username,
+            password=password,
+            totp_secret=totp_secret,
+            totp_code=totp_code,
+            device_token=session_store.read_device_token(token_key),
+            progress=_show_progress,
+        )
+    except OktaSignInError as error:
+        print(f"okta: {error.code}: {error}", file=sys.stderr)
+        if error.code == "credentials_rejected":
+            return EXIT_CREDENTIALS_REJECTED
+        return 1
+    except ValueError as error:
+        print(f"okta: {error}", file=sys.stderr)
+        return 1
+    session_store.save_device_token(token_key, result.device_token)
+
+    # The same keys the TypeScript CLI prints, so wrapper scripts work with either.
+    payload = {
+        "server": args.server,
+        "interface": result.interface,
+        "user": result.user,
+        "cookieName": result.cookie_name,
+        "cookie": result.cookie,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+async def _run_check(args: argparse.Namespace) -> int:
+    _warn_ignored(args, "timeout_ms")
+    result = await verify_session(url=args.url)
+    return _print_result(
+        result,
+        use_json=args.json,
+        success_key="valid",
+        success_text=_format_check_message(result),
+        failure_text=result["message"],
+    )
+
+
+def _run_list(args: argparse.Namespace) -> int:
+    sessions = session_store.list_sessions()
+    payload = {"count": len(sessions), "sessions": sessions}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if not sessions:
+        print("No saved sessions.")
+        return 0
+
+    print(f"Saved sessions: {len(sessions)}")
+    for session in sessions:
+        print(
+            f"- {session['domain_key']} | {session['url']} | "
+            f"saved {session['saved_at_iso']} | "
+            f"cookies {session['cookie_count']} | origins {session['origin_count']}"
+        )
+    return 0
+
+
+def _run_delete(args: argparse.Namespace) -> int:
+    deleted = session_store.delete_session(args.url)
+    payload = {
+        "deleted": deleted,
+        "message": "Session deleted" if deleted else "No session found for this URL",
+        "url": args.url,
+    }
+    return _print_result(
+        payload,
+        use_json=args.json,
+        success_key="deleted",
+        success_text=payload["message"],
+        failure_text=payload["message"],
+    )
+
+
+def _run_cookies(args: argparse.Namespace) -> int:
+    session_path = session_store.get_session_path(args.url)
+    if not session_path:
+        payload = {"error": "No stored session found for this URL", "url": args.url}
+        print(json.dumps(payload, indent=2) if args.json else payload["error"], file=sys.stderr)
+        return 1
+
+    with open(session_path, "r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    cookies = data.get("cookies", [])
+    if args.domain:
+        cookies = [
+            cookie for cookie in cookies if args.domain.lower() in cookie.get("domain", "").lower()
+        ]
+
+    payload = {"count": len(cookies), "cookies": cookies, "url": args.url}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"Cookies: {len(cookies)}")
+    for cookie in cookies:
+        print(f"- {cookie.get('name')} @ {cookie.get('domain')}{cookie.get('path', '/')}")
+    return 0
+
+
+def _run_config(args: argparse.Namespace) -> int:
+    if args.show:
+        return _show_config_status(use_json=args.json)
+    if args.reset:
+        return _reset_config(args)
+    if args.json:
+        print(json.dumps({"error": "--json is only supported with --show or --reset"}, indent=2))
+        return 1
+    return ConfigWizard(provider=args.provider).run()
+
+
+async def _run_setup() -> int:
+    server = start_setup()
+    print(
+        f"okta: setup is open in your browser. If it isn't, visit:\n  {server.url}",
+        file=sys.stderr,
+    )
+    open_browser(server.url)
+    try:
+        await asyncio.to_thread(server.done.wait)
+    finally:
+        server.close()
+    print("okta: setup finished", file=sys.stderr)
+    return 0
+
+
+def _run_export(args: argparse.Namespace) -> int:
+    refusal = export_refusal(args.confirmed, sys.stdout.isatty())
+    if refusal:
+        print(f"okta: {refusal}", file=sys.stderr)
+        return 1
+    stored_settings = load_settings()
+    credentials = resolve_credentials(
+        app_settings=stored_settings,
+        stored_credentials=(
+            load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
+        ),
+        progress=_show_progress,
+        read_totp_secret=True,
+    )
+    output = export_json(credentials)
+    if output is None:
+        print("okta: no username or password to export. Run `okta setup` first.", file=sys.stderr)
+        return 1
+    print(output)
+    return 0
+
+
+def _resolve_credentials(
+    args: argparse.Namespace, stored_settings: AppSettings
+) -> tuple[str, str, str | None, Callable[[], Awaitable[str]] | None]:
+    stored_credentials = (
+        load_stored_credentials() if uses_keyring(stored_settings) else StoredCredentials()
+    )
+    credentials = resolve_credentials(
+        explicit_username=args.username,
+        explicit_password=args.password,
+        explicit_totp_secret=args.totp_secret,
+        app_settings=stored_settings,
+        stored_credentials=stored_credentials,
+        progress=_show_progress,
+    )
+    username = _require_value(credentials.username, "Username", secret=False)
+    password = _require_value(credentials.password, "Password", secret=True)
+    totp_code = credentials.totp_code(_show_progress)
+    # With a TOTP field in 1Password there's nothing to ask for.
+    totp_secret = (
+        None if totp_code else _prompt_optional_value(credentials.totp_secret, "TOTP secret")
+    )
+    return username, password, totp_secret, totp_code
+
+
+def _show_progress(message: str) -> None:
+    """Sign-in takes a few round trips to Okta; say which one we're on. stderr, so
+    --json output on stdout stays clean."""
+    print(f"okta: {message}...", file=sys.stderr, flush=True)
+
+
+def _warn_ignored(args: argparse.Namespace, *names: str) -> None:
+    for name in names:
+        if getattr(args, name) not in (None, False):
+            flag = "--" + name.replace("_", "-")
+            print(
+                f"okta: {flag} is ignored since 0.3.0: sign-in no longer uses a browser.",
+                file=sys.stderr,
+            )
+
+
+def _require_value(value: str | None, label: str, *, secret: bool) -> str:
+    if value:
+        return value
+    if not sys.stdin.isatty():
+        raise SystemExit(f"{label} is required in non-interactive mode.")
+
+    while True:
+        if secret:
+            entered = getpass(f"{label}: ")
+        else:
+            print(f"{label}: ", end="", file=sys.stderr, flush=True)
+            entered = input().strip()
+        if entered:
+            return entered
+        print(f"{label} is required.", file=sys.stderr)
+
+
+def _prompt_optional_value(
+    value: str | None,
+    label: str,
+) -> str | None:
+    if value:
+        return value
+    if not sys.stdin.isatty():
+        return None
+
+    print(f"{label} (optional): ", end="", file=sys.stderr, flush=True)
+    entered = input().strip()
+    return entered or None
+
+
+def _format_login_message(result: dict[str, Any]) -> str:
+    # An Okta app link's session is saved under the site it landed on.
+    domain_key = result.get("domain_key")
+    session_path = session_store.get_session_path(f"https://{domain_key}/") if domain_key else None
+    message = result["message"]
+    if session_path:
+        return (
+            f"{message}\n"
+            f"Sensitive session data is stored locally under: {session_store.SESSIONS_DIR}\n"
+            f"Session file: {session_path}"
+        )
+    return message
+
+
+def _format_check_message(result: dict[str, Any]) -> str:
+    return f"{result['message']} ({result['domain_key']})"
+
+
+def _show_config_status(*, use_json: bool) -> int:
+    credential_status = get_store_status()
+    settings_status = describe_settings()
+    payload = {
+        "credential_provider": settings_status["credential_provider"],
+        "keyring_available": credential_status["available"],
+        "keyring_backend": credential_status["backend"],
+        "keyring_error": credential_status["error"],
+        "username": credential_status.get("username"),
+        "password_stored": credential_status.get("password_stored", False),
+        "totp_secret_stored": credential_status.get("totp_secret_stored", False),
+        "default_url": settings_status["default_url"],
+        "config_path": settings_status["config_path"],
+        "op_vault": settings_status["op_vault"],
+        "op_item": settings_status["op_item"],
+        "op_env_file": settings_status["op_env_file"],
+        "op_env_file_exists": settings_status["op_env_file_exists"],
+    }
+
+    if use_json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print(f"Credential provider: {payload['credential_provider']}")
+    print(f"Keyring available: {'yes' if payload['keyring_available'] else 'no'}")
+    print(f"Keyring backend: {payload['keyring_backend']}")
+    if payload["keyring_error"]:
+        print(f"Keyring error: {payload['keyring_error']}")
+    print(f"Username: {payload['username'] or '(not set)'}")
+    print(f"Password stored: {'yes' if payload['password_stored'] else 'no'}")
+    print(f"TOTP secret stored: {'yes' if payload['totp_secret_stored'] else 'no'}")
+    print(f"Default URL: {payload['default_url'] or '(not set)'}")
+    if payload["credential_provider"] == "op":
+        print(f"1Password vault: {payload['op_vault'] or '(not set)'}")
+        print(f"1Password item: {payload['op_item'] or '(not set)'}")
+        print(f"op env file: {payload['op_env_file'] or '(not set)'}")
+        print(f"op env file exists: {'yes' if payload['op_env_file_exists'] else 'no'}")
+    print(f"Settings file: {payload['config_path']}")
+    return 0
+
+
+def _reset_config(args: argparse.Namespace) -> int:
+    current_settings = load_settings()
+    keyring_status = get_store_status()
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("--reset requires --yes in non-interactive mode.", file=sys.stderr)
+            return 1
+
+        confirmed = input("Delete stored credentials and local settings? [y/N]: ").strip().lower()
+        if confirmed not in {"y", "yes"}:
+            message = "Reset cancelled."
+            if args.json:
+                print(json.dumps({"deleted": False, "message": message}, indent=2))
+            else:
+                print(message)
+            return 1
+
+    keyring_error = None
+    should_clear_keyring = uses_keyring(current_settings) or bool(keyring_status["available"])
+    if should_clear_keyring:
+        try:
+            clear_credentials()
+        except CredentialStoreError as exc:
+            keyring_error = str(exc)
+
+    clear_op_env_file(current_settings)
+    clear_settings()
+    deleted = keyring_error is None
+    if deleted:
+        message = "Stored credentials and local settings deleted."
+    else:
+        message = f"Local settings were deleted, but OS keyring cleanup failed: {keyring_error}"
+    payload = {"deleted": deleted, "message": message}
+    if args.json:
+        print(json.dumps(payload, indent=2))
+    else:
+        stream = sys.stdout if deleted else sys.stderr
+        print(payload["message"], file=stream)
+    return 0 if deleted else 1
+
+
+def _print_result(
+    payload: dict[str, Any],
+    *,
+    use_json: bool,
+    success_key: str,
+    success_text: str,
+    failure_text: str,
+) -> int:
+    success = bool(payload.get(success_key))
+    if use_json:
+        print(json.dumps(payload, indent=2))
+    else:
+        stream = sys.stdout if success else sys.stderr
+        print(success_text if success else failure_text, file=stream)
+    return 0 if success else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -9,8 +9,11 @@ permissions:
   contents: read
 
 jobs:
-  lint:
+  python-lint:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -31,8 +34,14 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-  test:
+      - name: Mypy
+        run: mypy src
+
+  python-test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
     strategy:
       fail-fast: false
       matrix:
@@ -53,3 +62,35 @@ jobs:
 
       - name: Run tests
         run: pytest
+
+  typescript-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: typescript
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

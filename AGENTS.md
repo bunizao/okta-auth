@@ -1,61 +1,45 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+Guidance for coding agents working in this repository.
 
-## Project Overview
+## Project
 
-okta-auth is an Okta login toolkit with an interactive CLI and an MCP server for session reuse. It uses Playwright to automate Okta SSO and persists per-domain session state for reuse by AI agents.
-
-## Commands
-
-```bash
-# Setup
-uv venv && source .venv/bin/activate
-uv pip install -e '.[dev]'
-playwright install chromium
-
-# Quality gates (run all three before submitting)
-ruff format --check .
-ruff check .
-pytest
-
-# Run single test
-pytest tests/test_session_store.py -v
-
-# Run interactive CLI
-okta
-
-# Run MCP server (stdio transport, stdout is JSON-RPC)
-okta-auth
-```
-
-## Architecture
+okta-auth signs in to SAML apps and GlobalProtect portals behind Okta Identity
+Engine over plain HTTP. It ships as two packages, both named `okta-auth-cli`:
 
 ```
-src/okta_auth/
-├── server.py          # FastMCP entry point, defines all 5 MCP tools
-├── log.py             # Stderr-only logging (stdout reserved for JSON-RPC)
-├── auth/
-│   ├── login.py       # auto_login() engine: selector-based form filling, portal detection, MFA/TOTP
-│   ├── session_store.py  # Per-domain session CRUD at ~/.okta-auth/sessions/
-│   └── totp.py        # pyotp wrapper for TOTP code generation
-└── browser/
-    ├── controller.py  # BrowserController async context manager, BrowserConfig dataclass
-    ├── detection.py   # Cross-platform browser executable discovery with env var overrides
-    └── helpers.py     # fill_first_match(), click_first_match(), maybe_switch_to_code_factor()
+typescript/   # npm. The reference: the core runs in Node 22+, Bun and Cloudflare Workers
+python/       # PyPI. okta_auth.core mirrors typescript/src module for module
 ```
 
-### Key Patterns
+Each folder has its own AGENTS.md with commands, layout and package rules. Read
+the one for the package you touch.
 
-- **Selector redundancy**: `login.py` defines 16+ CSS selectors per form field (USERNAME_SELECTORS, PASSWORD_SELECTORS, etc.) tried in priority order for broad Okta form compatibility.
-- **Portal detection**: `_is_on_portal()` confirms auth completion by checking domain change + login field absence.
-- **Session keying**: Sessions are stored as `{domain_hash}.json` + `{domain_hash}.meta.json` using the URL's netloc as the domain key.
-- **Async-first**: All I/O uses `async/await`; the server runs on asyncio via FastMCP.
-- **Browser fallback**: `BrowserController` tries the requested channel first, falls back to default Chromium on launch failure.
+## Rules for both packages
 
-## Code Style
+- Error messages and logs never contain passwords, one-time codes, the TOTP
+  secret, state tokens, query strings or cookie values. Use `where(url)` for
+  locations. Tests assert this.
+- Sign-in never retries. A `credentials_rejected` retry can lock the account;
+  both CLIs exit 77 instead.
+- Credentials only go to the Okta host that served the sign-in page; cookies
+  only to the host that set them.
+- New IDX behaviour gets a scripted case in each fake SSO
+  (`typescript/tests/fake-sso.ts`, `python/tests/fake_sso.py`) and a test of
+  the same case name in each.
+- A protocol fix lands in both packages in the same PR.
+- Never sign in to a real Okta org from tests or scripts.
+- `setup.html` is one page served by both CLIs; the two copies must stay
+  identical (a Python test checks).
 
-- **Formatter/Linter**: Ruff (line-length 100, target py311, double quotes, LF endings)
-- **Lint rules**: E, F, I (isort), B (flake8-bugbear); E501 ignored
-- **Type checking**: mypy with `check_untyped_defs = true`, `ignore_missing_imports = true`
-- **All logs go to stderr** — never print to stdout (breaks MCP stdio transport)
+## Releases
+
+Each package is versioned and released on its own. Bump the version in
+`python/pyproject.toml` or `typescript/package.json`, then push a tag:
+`py-vX.Y.Z` publishes to PyPI, `ts-vX.Y.Z` to npm. A pre-release version
+(`0.3.0rc1`, `0.3.0-rc.0`) stays off the default install on both registries.
+
+## Code style
+
+English comments, Conventional Commits. Scope commits by package when only one
+changes, e.g. `fix(py): ...`, `feat(ts): ...`.

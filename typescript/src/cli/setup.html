@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>okta-auth setup</title>
+<!-- Served by `okta setup` / `okta-auth setup` on 127.0.0.1. The TS and Python packages ship the same file. -->
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e3e1db;
+    --accent: #2f5bd3; --accent-ink: #ffffff; --ok: #1f7a4d; --bad: #b3261e; --code: #f0eee9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1f1f1d; --ink: #ecebe7; --muted: #9b9a95; --line: #33322f;
+      --accent: #7f9cf5; --accent-ink: #10131c; --ok: #5cc28e; --bad: #f2867e; --code: #2a2a27;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 40px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0 0 28px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  section.off { opacity: 0.45; pointer-events: none; }
+  h2 { font-size: 15px; margin: 0 0 12px; display: flex; gap: 10px; align-items: center; }
+  h2 .n { width: 22px; height: 22px; border-radius: 50%; background: var(--code); display: inline-grid; place-items: center; font-size: 12px; }
+  h2 .n.done { background: var(--ok); color: var(--panel); }
+  p { margin: 8px 0; }
+  .muted { color: var(--muted); }
+  .choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 520px) { .choices { grid-template-columns: 1fr; } }
+  .choice { text-align: left; border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 10px; padding: 12px 14px; cursor: pointer; font: inherit; }
+  .choice strong { display: block; }
+  .choice[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .choice:disabled { opacity: 0.5; cursor: not-allowed; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  input { width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; }
+  input:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { margin-top: 14px; background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.primary:disabled { opacity: 0.5; cursor: default; }
+  ul.items { list-style: none; margin: 12px 0 0; padding: 0; max-height: 280px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  ul.items li button { width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 10px 12px; font: inherit; color: inherit; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+  ul.items li:last-child button { border-bottom: 0; }
+  ul.items li button:hover, ul.items li button[aria-pressed="true"] { background: var(--code); }
+  .tag { font-size: 12px; color: var(--accent); white-space: nowrap; }
+  .sub { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log { margin: 12px 0 0; padding: 10px 12px; background: var(--code); border-radius: 8px; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; min-height: 2em; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  pre { background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto; margin: 6px 0 12px; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Set up okta-auth</h1>
+  <p class="lede">Tell okta-auth where your Okta credentials live, then try one sign-in. Nothing here leaves this computer.</p>
+
+  <section id="where">
+    <h2><span class="n" id="n1">1</span> Where are your credentials?</h2>
+    <div class="choices">
+      <button class="choice" id="pick-op" aria-pressed="false">
+        <strong>1Password</strong><span class="muted" id="op-note">okta-auth keeps references; 1Password keeps the secrets and hands out TOTP codes.</span>
+      </button>
+      <button class="choice" id="pick-kc" aria-pressed="false">
+        <strong id="kc-name">macOS Keychain</strong><span class="muted" id="kc-note">Stored under the service "okta-auth".</span>
+      </button>
+    </div>
+
+    <div id="op-panel" hidden>
+      <p class="muted">1Password may ask you to approve okta-auth.</p>
+      <input id="op-filter" placeholder="Filter your logins" aria-label="Filter 1Password logins">
+      <ul class="items" id="op-items"><li class="muted" style="padding:10px 12px">Loading…</li></ul>
+      <button class="primary" id="op-use" disabled>Use this login</button>
+    </div>
+
+    <div id="kc-panel" hidden>
+      <label for="kc-user">Okta username</label><input id="kc-user" autocomplete="username">
+      <label for="kc-pass">Okta password</label><input id="kc-pass" type="password" autocomplete="current-password">
+      <label for="kc-totp">TOTP secret (base32, optional)</label><input id="kc-totp" autocomplete="off" spellcheck="false">
+      <button class="primary" id="kc-save">Save to Keychain</button>
+    </div>
+
+    <p id="where-result" class="log" hidden></p>
+    <details id="totp-help" hidden>
+      <summary>How to get a TOTP authenticator Okta accepts</summary>
+      <p>okta-auth answers Google Authenticator or Okta Verify's code, never a push.</p>
+      <p>In Okta, open <strong>Settings → Security Methods</strong> and set up <strong>Google Authenticator</strong>. With 1Password, open your Okta login, add a <em>One-Time Password</em> field and scan the QR code into it; otherwise choose <strong>Can't scan?</strong> and copy the secret. Finish enrolling with a code, then come back here.</p>
+    </details>
+  </section>
+
+  <section id="test" class="off">
+    <h2><span class="n" id="n2">2</span> Try a sign-in</h2>
+    <p class="muted">A page that sends you to Okta when signed out, or an Okta app link. One attempt only: a wrong password stops here, since retries lock the account.</p>
+    <label for="test-url">URL</label>
+    <input id="test-url" type="url" placeholder="https://learning.example.edu/login/index.php">
+    <button class="primary" id="test-run">Sign in</button>
+    <div class="log" id="test-log" hidden></div>
+  </section>
+
+  <section id="use" class="off">
+    <h2><span class="n" id="n3">3</span> Use it from other tools</h2>
+    <p>Saved sessions, for local scripts:</p>
+    <pre id="use-cookies"></pre>
+    <p>A Worker that signs in by itself (OnTrack, Moodle MCP) needs the raw password and TOTP secret. This makes your Okta identity as safe as that Cloudflare account; put a passkey on it first.</p>
+    <pre id="use-export"></pre>
+    <button class="primary" id="finish">Done</button>
+    <p id="bye" class="muted" hidden>All set. You can close this tab.</p>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let state = {};
+  let chosen = null;
+
+  async function api(path, body) {
+    const response = await fetch("api/" + path, body === undefined ? {} : {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({ message: "no answer from okta-auth" }));
+    if (!response.ok) throw new Error(data.message || "request failed");
+    return data;
+  }
+
+  function line(target, text, cls) {
+    const row = document.createElement("div");
+    row.textContent = text;
+    if (cls) row.className = cls;
+    target.append(row);
+  }
+
+  function step(n, done) {
+    $("n" + n).classList.toggle("done", done);
+    $("n" + n).textContent = done ? "✓" : String(n);
+  }
+
+  function reveal(id) { $(id).classList.remove("off"); }
+
+  async function init() {
+    state = await api("state");
+    $("use-cookies").textContent = state.cli + " cookies <url>";
+    $("use-export").textContent = state.cli + " export --dangerously-print-password-and-totp-secret | npx wrangler secret bulk";
+    if (!state.op) { $("pick-op").disabled = true; $("op-note").textContent = "Install the 1Password CLI (op) and turn on its app integration to use this."; }
+    // state.keychain names the OS credential store, or is false when there is none.
+    if (state.keychain) { $("kc-name").textContent = state.keychain; $("kc-save").textContent = "Save to " + state.keychain; }
+    else { $("pick-kc").disabled = true; $("kc-note").textContent = "Not available here. Set OKTA_USERNAME and OKTA_PASSWORD instead."; }
+  }
+
+  $("pick-op").onclick = async () => {
+    $("pick-op").setAttribute("aria-pressed", "true"); $("pick-kc").setAttribute("aria-pressed", "false");
+    $("op-panel").hidden = false; $("kc-panel").hidden = true;
+    try {
+      const { items } = await api("op/items");
+      renderItems(items);
+      $("op-filter").oninput = () => renderItems(items);
+    } catch (error) {
+      $("op-items").replaceChildren(); line($("op-items"), "Couldn't list 1Password logins: " + error.message, "bad");
+    }
+  };
+
+  function renderItems(items) {
+    const filter = $("op-filter").value.trim().toLowerCase();
+    const list = $("op-items");
+    list.replaceChildren();
+    const shown = items.filter((item) => !filter || (item.title + " " + item.urls.join(" ")).toLowerCase().includes(filter));
+    if (!shown.length) { line(list, "No matching logins.", "muted"); return; }
+    for (const item of shown.slice(0, 200)) {
+      const li = document.createElement("li");
+      const button = document.createElement("button");
+      const left = document.createElement("span");
+      const title = document.createElement("div"); title.textContent = item.title;
+      const sub = document.createElement("div"); sub.className = "sub"; sub.textContent = item.vault.name + (item.urls[0] ? " · " + item.urls[0] : "");
+      left.append(title, sub);
+      button.append(left);
+      if (item.urls.some((href) => /(^|\.)okta(preview)?\.com(\/|$|:)/.test(href.replace(/^https?:\/\//, "")))) {
+        const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = "Okta"; button.append(tag);
+      }
+      button.setAttribute("aria-pressed", String(chosen?.id === item.id));
+      button.onclick = () => { chosen = item; $("op-use").disabled = false; renderItems(items); };
+      li.append(button); list.append(li);
+    }
+  }
+
+  $("op-use").onclick = () => save(() => api("op/use", { id: chosen.id, vault: chosen.vault.id }), "1Password login “" + chosen.title + "”");
+
+  $("pick-kc").onclick = () => {
+    $("pick-kc").setAttribute("aria-pressed", "true"); $("pick-op").setAttribute("aria-pressed", "false");
+    $("kc-panel").hidden = false; $("op-panel").hidden = true;
+    $("kc-user").focus();
+  };
+
+  $("kc-save").onclick = () => save(() => api("keychain", {
+    username: $("kc-user").value, password: $("kc-pass").value, totpSecret: $("kc-totp").value,
+  }), "the " + (state.keychain || "Keychain"));
+
+  async function save(request, where) {
+    const out = $("where-result");
+    out.hidden = false; out.replaceChildren();
+    try {
+      const result = await request();
+      $("kc-pass").value = ""; $("kc-totp").value = "";
+      line(out, "Saved: okta-auth reads your credentials from " + where + ".", "ok");
+      if (!result.totp) line(out, "No TOTP authenticator yet. Okta will refuse sign-ins that need MFA until you add one.", "bad");
+      $("totp-help").hidden = result.totp; $("totp-help").open = !result.totp;
+      step(1, true); reveal("test"); $("test-url").focus();
+    } catch (error) {
+      line(out, error.message, "bad");
+    }
+  }
+
+  $("test-run").onclick = async () => {
+    const log = $("test-log");
+    log.hidden = false; log.replaceChildren();
+    $("test-run").disabled = true;
+    try {
+      const response = await fetch("api/test", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("test-url").value }),
+      });
+      if (!response.ok) { const data = await response.json(); throw new Error(data.message); }
+      const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let newline;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const event = JSON.parse(buffer.slice(0, newline)); buffer = buffer.slice(newline + 1);
+          if (event.progress) line(log, event.progress + "…");
+          else if (event.ok) { line(log, "Signed in to " + event.host + "; saved " + event.cookies + " cookies.", "ok"); step(2, true); reveal("use"); }
+          else line(log, event.code === "credentials_rejected"
+            ? "Okta rejected the username or password. Fix them above before trying again: each attempt counts towards a lockout."
+            : event.code + ": " + event.message, "bad");
+        }
+      }
+    } catch (error) {
+      line(log, error.message, "bad");
+    }
+    $("test-run").disabled = false;
+  };
+
+  $("finish").onclick = async () => {
+    await api("done", {}).catch(() => {});
+    step(3, true); $("finish").hidden = true; $("bye").hidden = false;
+  };
+
+  init().catch((error) => { document.querySelector(".lede").textContent = "Couldn't reach okta-auth: " + error.message; });
+</script>
+</body>
+</html>

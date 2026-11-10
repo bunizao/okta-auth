@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report an issue in okta-auth-mcp
+about: Report an issue in okta-auth
 labels: bug
 ---
 
@@ -19,5 +19,6 @@ labels: bug
 ## Environment
 
 - OS:
-- Python version:
+- Package: Python (PyPI) or TypeScript (npm)
+- Runtime and version (Python, Node, Bun, Workers):
 - Package version:
