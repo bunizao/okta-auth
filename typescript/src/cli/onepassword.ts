@@ -9,7 +9,8 @@ import { totp } from "../totp.js";
 
 export type RunOp = (args: string[], stdin?: string) => Promise<string>;
 
-const TIMEOUT_MS = 20_000;
+// Long enough for someone to notice 1Password's approval prompt and answer it.
+const TIMEOUT_MS = 60_000;
 
 export class OpError extends Error {
   // op's exit status when it ran and failed; undefined when it never ran or timed out.

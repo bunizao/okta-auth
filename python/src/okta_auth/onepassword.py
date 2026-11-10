@@ -14,7 +14,8 @@ from urllib.parse import parse_qs, urlparse
 
 from okta_auth.core.totp import totp
 
-TIMEOUT_SECONDS = 20
+# Long enough for someone to notice 1Password's approval prompt and answer it.
+TIMEOUT_SECONDS = 60
 
 RunOp = Callable[[list[str], "str | None"], str]
 
