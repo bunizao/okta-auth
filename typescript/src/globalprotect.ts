@@ -1,7 +1,7 @@
 import { Client, type Fetch, type Page } from "./client.js";
 import { OktaSignInError, where } from "./errors.js";
 import { decodeEntities, readSamlForm } from "./html.js";
-import { deviceTokenOf, handOff, httpError, type Progress } from "./sign-in.js";
+import { deviceTokenOf, handOff, httpError, keepingDeviceToken, type Progress } from "./sign-in.js";
 import { base32Decode } from "./totp.js";
 
 export type GlobalProtectInterface = "gateway" | "portal";
@@ -80,11 +80,12 @@ export async function signInGlobalProtect(options: GlobalProtectOptions): Promis
 
   const progress = options.onProgress ?? (() => {});
   const interfaces: GlobalProtectInterface[] = options.interface ? [options.interface] : ["gateway", "portal"];
-  const start = await prelogin(client, base, interfaces, progress);
-  const acs = await handOff(client, await openOkta(client, start), options, now, progress);
-  const result = readResult(acs);
-
-  return { interface: start.interface, ...result, deviceToken: deviceTokenOf(client, options.deviceToken) };
+  return keepingDeviceToken(client, options.deviceToken, async () => {
+    const start = await prelogin(client, base, interfaces, progress);
+    const acs = await handOff(client, await openOkta(client, start), options, now, progress);
+    const result = readResult(acs);
+    return { interface: start.interface, ...result, deviceToken: deviceTokenOf(client, options.deviceToken) };
+  });
 }
 
 // Asks each interface's prelogin in turn and returns the first SAML request.

@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { OktaSignInError, signIn, totp, type SignInOptions } from "../src/index.js";
 import {
@@ -187,6 +188,14 @@ describe("signIn", () => {
     expect(passwordAttempts).toHaveLength(1);
     expect(fake.requests.some((request) => request.url.pathname === "/login/token/redirect")).toBe(false);
     expectNoSecrets(error);
+  });
+
+  it("keeps Okta's device token on a failed sign-in without printing it", async () => {
+    const { run } = setup({}, { password: "wrong password" });
+    const error = await rejection(run());
+
+    expect(error.deviceToken).toBe("dt-1");
+    expect(`${error.message} ${JSON.stringify(error)} ${inspect(error)}`).not.toContain("dt-1");
   });
 
   it("reports a wrong one-time code as passcode_rejected", async () => {

@@ -363,7 +363,8 @@ result.okta_session  # Okta's session cookies, without DT
 ```
 
 `sign_in` raises `OktaSignInError` with a `code`, and `ValueError` for bad input.
-It never retries.
+It never retries. The error's `device_token` is Okta's DT if the attempt got that
+far; save it as you would a result's.
 
 `totp_code`, an async function returning the current code, replaces
 `totp_secret` when a password manager holds the secret: it's called only when

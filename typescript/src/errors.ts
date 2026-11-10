@@ -18,6 +18,10 @@ export type OktaSignInErrorCode =
 // carry passwords, one-time codes, the TOTP secret, state tokens or cookie values.
 export class OktaSignInError extends Error {
   override readonly name = "OktaSignInError";
+  // Okta's DT cookie when the failed sign-in got that far, so the next attempt
+  // still looks like the same device. Non-enumerable: console.error, util.inspect
+  // and JSON.stringify leave it out.
+  declare readonly deviceToken?: string;
 
   constructor(
     readonly code: OktaSignInErrorCode,

@@ -24,6 +24,9 @@ class OktaSignInError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+        # Okta's DT cookie when the failed sign-in got that far, so the next attempt
+        # still looks like the same device. str() and repr() leave it out.
+        self.device_token: str | None = None
 
 
 def where(url: httpx.URL) -> str:

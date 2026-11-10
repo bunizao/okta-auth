@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -82,7 +83,10 @@ async def sign_in(
         base32_decode(totp_secret)
 
     credentials = Credentials(username, password, totp_secret, totp_code)
-    async with Client(transport, now, device_token) as client:
+    async with (
+        Client(transport, now, device_token) as client,
+        keeping_device_token(client, device_token),
+    ):
         for cookie in okta_session or []:
             client.jar.set(cookie)
         # Okta's session cookies name Okta's host before any request reaches it.
@@ -217,6 +221,16 @@ def device_token_of(client: Client, previous: str | None) -> str | None:
     """Okta's DT cookie after this sign-in, or the one the caller passed in."""
     current = client.jar.get(client.idp_host, "DT") if client.idp_host else None
     return current.value if current else previous
+
+
+@asynccontextmanager
+async def keeping_device_token(client: Client, previous: str | None) -> AsyncIterator[None]:
+    """If the sign-in inside fails, puts the device token Okta issued on the error."""
+    try:
+        yield
+    except OktaSignInError as error:
+        error.device_token = device_token_of(client, previous)
+        raise
 
 
 async def _authenticate(

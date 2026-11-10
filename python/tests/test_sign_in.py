@@ -231,6 +231,14 @@ def test_stops_after_one_wrong_password_with_credentials_rejected() -> None:
     expect_no_secrets(error)
 
 
+def test_keeps_oktas_device_token_on_a_failed_sign_in_without_printing_it() -> None:
+    _, run = setup(password="wrong password")
+    error = rejection(run)
+
+    assert error.device_token == "dt-1"
+    assert "dt-1" not in f"{error} {error!r}"
+
+
 def test_reports_a_wrong_one_time_code_as_passcode_rejected() -> None:
     _, run = setup({"totp_secret": "KRSXG5CTMVRXEZLUKN2XAZLSKNSWG4TFOQ"})
     error = rejection(run)

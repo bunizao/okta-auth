@@ -73,6 +73,7 @@ function totp(secret: string, now?: number): Promise<string>; // RFC 6238, 6 dig
 
 class OktaSignInError extends Error {
   code: OktaSignInErrorCode;
+  deviceToken?: string; // Okta's DT if the attempt got that far; save it like a result's
 }
 ```
 

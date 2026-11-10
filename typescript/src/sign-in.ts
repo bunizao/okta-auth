@@ -66,7 +66,10 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
   for (const cookie of options.oktaSession ?? []) client.jar.set(cookie);
   // Okta's session cookies name Okta's host before any request reaches it.
   if (options.oktaSession?.length) client.useIdp(options.oktaSession[0]!.domain);
+  return keepingDeviceToken(client, options.deviceToken, () => signInWith(client, target, options, now));
+}
 
+async function signInWith(client: Client, target: URL, options: SignInOptions, now: () => number): Promise<SignInResult> {
   const progress = options.onProgress ?? (() => {});
   progress(`Opening ${target.hostname}`);
   const first = await submitSamlRequest(client, await client.follow(target));
@@ -104,6 +107,17 @@ export async function signIn(options: SignInOptions): Promise<SignInResult> {
   }
 
   return { cookies: client.jar.list(target.hostname), ...signedIn };
+}
+
+// Runs a sign-in and, if it fails, puts the device token Okta issued on the error.
+export async function keepingDeviceToken<T>(client: Client, previous: string | undefined, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const token = deviceTokenOf(client, previous);
+    if (error instanceof OktaSignInError && token) Object.defineProperty(error, "deviceToken", { value: token });
+    throw error;
+  }
 }
 
 // Whether an IdP-initiated sign-in reached the app, judged only by the page the

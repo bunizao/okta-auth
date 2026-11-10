@@ -15,7 +15,14 @@ from .client import Client, Page
 from .errors import OktaSignInError, where
 from .html import decode_entities, read_saml_form
 from .idx import Credentials
-from .sign_in import Progress, device_token_of, hand_off, http_error, quiet
+from .sign_in import (
+    Progress,
+    device_token_of,
+    hand_off,
+    http_error,
+    keeping_device_token,
+    quiet,
+)
 from .totp import base32_decode
 
 GlobalProtectInterface = Literal["gateway", "portal"]
@@ -92,7 +99,10 @@ async def sign_in_globalprotect(
         base32_decode(totp_secret)
 
     credentials = Credentials(username, password, totp_secret, totp_code)
-    async with Client(transport, now, device_token) as client:
+    async with (
+        Client(transport, now, device_token) as client,
+        keeping_device_token(client, device_token),
+    ):
         interfaces: list[GlobalProtectInterface] = (
             [interface] if interface else ["gateway", "portal"]
         )
